@@ -112,8 +112,7 @@ public class LevelController : MonoBehaviour {
         RewardArea.InTriggerZoneListener += WhileInTriggerZone;
         RewardArea.OnProximityTriggered += InProximity;
 
-        //Prepare Eyelink
-        EyeLink.Initialize();
+        // EyeLink is initialized once by its BeforeSceneLoad runtime hook.
         onSessionTrigger.AddListener(EyeLink.OnSessionTrigger);
         //kw edit (commented out)
         //onSessionTrigger.AddListener(parallelPort.TryWriteTrigger);

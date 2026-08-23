@@ -40,7 +40,7 @@ public class ExperimentGUIController : DataGUIController {
 
     private Text startStopBtnTxt;
 
-    private void Awake() {
+    public void Awake() {
         trialIntermissionFixedField.onEndEdit.AddListener(OnTrialIntermissionFixedEndEdit);
         trialIntermissionMaxField.onEndEdit.AddListener(OnTrialIntermissionMaxEndEdit);
         trialIntermissionMinField.onEndEdit.AddListener(OnTrialIntermissionMinEndEdit);

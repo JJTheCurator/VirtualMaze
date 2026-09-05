@@ -134,6 +134,27 @@ public class CueController : MonoBehaviour {
         HideHint();
         HideCue();
     }
+
+    /// <summary>
+    /// Returns true when a screen-space point is inside the visible cue image.
+    /// </summary>
+    public bool IsScreenPointInsideCue(Vector2 screenPoint) {
+        if (cueImage == null || !cueImage.gameObject.activeInHierarchy) {
+            return false;
+        }
+
+        Canvas cueCanvas = cueImage.canvas;
+        Camera eventCamera = null;
+        if (cueCanvas != null && cueCanvas.renderMode != RenderMode.ScreenSpaceOverlay) {
+            eventCamera = cueCanvas.worldCamera != null ? cueCanvas.worldCamera : Camera.main;
+        }
+
+        return RectTransformUtility.RectangleContainsScreenPoint(
+            cueImage.rectTransform,
+            screenPoint,
+            eventCamera);
+    }
+
     public static void ProcessTrigger(SessionTrigger trigger, CueController cueController, ITriggerActions actions = null) {
         switch (trigger) {
             case SessionTrigger.CueOffsetTrigger:

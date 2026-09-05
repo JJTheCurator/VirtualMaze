@@ -34,22 +34,31 @@ public class WrongRewardAreaError : MonoBehaviour
         timer += Time.deltaTime;
         HintBlink();
 
-        if (levelController.errorFlag == false)
+        if (levelController?.errorFlag == false)
         {
             isSoundTriggered = true; // doesn't immediately sound in new trial but the robot in the wrong area already
         }
 
-        if (_sessionIndex != experimentController.sessionController.index && !experimentController.resetPositionOnSession) // checks if index has changed
+        if (experimentController != null)
         {
-            isSoundTriggered = true; // doesn't immediately sound in new session but the robot in the wrong area already
+            if (_sessionIndex != experimentController.sessionController.index && !experimentController.resetPositionOnSession) // checks if index has changed
+            {
+                isSoundTriggered = true; // doesn't immediately sound in new session but the robot in the wrong area already
+            }
         }
 
-        if (!LevelController.sessionStarted)
+        if (levelController != null)
         {
-            Reset();
+            if (LevelController.sessionStarted == false)
+            {
+                Reset();
+            }
         }
 
-        _sessionIndex = experimentController.sessionController.index; // sets new value to test for next iteration
+        if (_sessionIndex != null)
+        {
+            _sessionIndex = experimentController.sessionController.index; // sets new value to test for next iteration
+        }
     }
 
 

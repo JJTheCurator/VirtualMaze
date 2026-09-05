@@ -12,14 +12,41 @@ public class FileSelector : InputField {
     public OnPathSelectedEvent OnPathSelected = new OnPathSelectedEvent();
 
     protected override void Awake() {
-        browseBtn.onClick.AddListener(OnBrowseButtonClicked);
+        base.Awake();
+
+        ResolveReferences();
+
+        if (browseBtn != null) {
+            browseBtn.onClick.AddListener(OnBrowseButtonClicked);
+        }
+        else {
+            Debug.LogError("FileSelector could not find its browse button.", this);
+        }
+
         onEndEdit.AddListener(OnEndEditPath);
         defaultPath = Application.dataPath;
     }
 
     private void OnBrowseButtonClicked() {
+        ResolveReferences();
+
+        if (fb == null) {
+            Debug.LogError("FileSelector could not find a FileBrowser in the scene.", this);
+            return;
+        }
+
         fb.OnFileBrowserExit += OnBrowserExit;
         fb.TryShow(text, defaultPath);
+    }
+
+    private void ResolveReferences() {
+        if (browseBtn == null) {
+            browseBtn = GetComponentInChildren<Button>(true);
+        }
+
+        if (fb == null) {
+            fb = FindObjectOfType<FileBrowser>();
+        }
     }
 
     private void OnEndEditPath(string text) {
@@ -33,6 +60,20 @@ public class FileSelector : InputField {
             text = path;
             OnPathSelected.Invoke(path);
         }
+    }
+
+    protected override void OnDestroy() {
+        if (browseBtn != null) {
+            browseBtn.onClick.RemoveListener(OnBrowseButtonClicked);
+        }
+
+        onEndEdit.RemoveListener(OnEndEditPath);
+
+        if (fb != null) {
+            fb.OnFileBrowserExit -= OnBrowserExit;
+        }
+
+        base.OnDestroy();
     }
 
     [Serializable]

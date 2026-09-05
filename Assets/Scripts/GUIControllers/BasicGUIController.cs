@@ -8,16 +8,19 @@ public abstract class BasicGUIController : MonoBehaviour {
     private static readonly Color errorColor = new Color(1, 0.35f, 0.35f);
 
     protected void SetInputFieldValid(InputField field, bool valid) {
-        if (valid) {
-            field.image.color = Color.green;
+        if (field == null || field.textComponent == null) {
+            return;
         }
-        else {
-            field.image.color = errorColor;
-        }
+
+        field.textComponent.color = valid ? Color.green : errorColor;
     }
 
     protected void SetInputFieldNeutral(InputField field) {
-        field.image.color = Color.white;
+        if (field == null || field.textComponent == null) {
+            return;
+        }
+
+        field.textComponent.color = Color.black;
     }
 }
 

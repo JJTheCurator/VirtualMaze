@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 using ELink = SREYELINKLib.EyeLink;
 using ELinkUtil = SREYELINKLib.EyeLinkUtil;
 using Eye = SREYELINKLib.EL_EYE;
+using Eltype = SREYELINKLib.EL_DATA_TYPE;
+//using ALLF_DATA = SREYELINKLib.ALLF_DATA;
 
 
 /// <summary>
@@ -18,6 +21,11 @@ using Eye = SREYELINKLib.EL_EYE;
 /// </summary>
 public static class EyeLink
 {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetActiveWindow();
+#endif
+
     public struct GazeSample
     {
         public double trackerTime;
@@ -25,6 +33,8 @@ public static class EyeLink
         public Vector2 unityPixels;
         public float pupilArea;
         public bool isValid;
+        public Eltype eltype;
+
     }
 
     /// <summary>
@@ -108,6 +118,7 @@ public static class EyeLink
             if (!openDummy) {
                 ConfigureTracker();
                 OpenDataFile();
+                Calibrate();
             }
         }
         catch (Exception exception) {
@@ -126,10 +137,11 @@ public static class EyeLink
         }
     }
 
-    /// <summary>Runs the tracker-side camera setup and calibration.</summary>
+    /// <summary>
+    /// Runs camera setup and calibration in a temporary window on the Unity PC.
+    /// </summary>
     public static bool Calibrate()
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (!EnsureConnected("calibrate")) {
             return false;
         }
@@ -141,19 +153,64 @@ public static class EyeLink
 
         try {
             StopRecording();
-            eyelink.setOfflineMode();
-            eyelink.doTrackerSetup();
-            eyelink.setOfflineMode();
-            Debug.Log("[EyeLink] Tracker setup/calibration finished.");
+            IntPtr unityWindow = GetActiveWindow();
+            if (unityWindow == IntPtr.Zero) {
+                throw new InvalidOperationException(
+                    "Unity does not have an active window for the calibration display.");
+            }
+
+            using (EyeLinkCalibrationWindow calibrationWindow =
+                new EyeLinkCalibrationWindow(unityWindow)) {
+                calibrationWindow.ShowForCalibration();
+
+                int width = calibrationWindow.ClientSize.Width;
+                int height = calibrationWindow.ClientSize.Height;
+                int right = Math.Max(0, width - 1);
+                int bottom = Math.Max(0, height - 1);
+
+                if (width != Screen.width || height != Screen.height) {
+                    Debug.LogWarning(
+                        "[EyeLink] The local calibration window is " + width + "x" + height +
+                        ", but Unity is rendering at " + Screen.width + "x" + Screen.height +
+                        ". Use a fullscreen standalone build so gaze and stimulus " +
+                        "coordinates remain aligned.");
+                }
+
+                eyelink.setOfflineMode();
+                eyelink.sendCommand(
+                    "screen_pixel_coords = 0 0 " + right + " " + bottom);
+                eyelink.sendMessage(
+                    "DISPLAY_COORDS 0 0 " + right + " " + bottom);
+                eyelinkUtil.pumpDelay(50);
+
+                SREYELINKLib.ELGDICal cal = eyelinkUtil.getGDICal();
+                cal.setCalibrationWindow(calibrationWindow.Handle.ToInt32());
+                cal.enableKeyCollection(true);
+
+                try {
+                    eyelink.doTrackerSetup();
+                    eyelinkUtil.pumpDelay(1500);
+                    eyelink.doDriftCorrect(
+                        (short)(width / 2),
+                        (short)(height / 2),
+                        true,
+                        true);
+                }
+                finally {
+                    // The calibration window is about to be destroyed, so its
+                    // associated keyboard collection must also be stopped.
+                    cal.enableKeyCollection(false);
+                }
+            }
+
+            Debug.Log("[EyeLink] Local tracker setup/calibration finished.");
+
             return true;
         }
         catch (Exception exception) {
             Debug.LogError("[EyeLink] Calibration failed: " + exception.Message);
             return false;
         }
-#else
-        return false;
-#endif
     }
 
     public static bool OpenDataFile()
@@ -285,7 +342,6 @@ public static class EyeLink
 
     public static bool SendCommand(string command)
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (String.IsNullOrWhiteSpace(command) || !EnsureConnected("send a command")) {
             return false;
         }
@@ -299,9 +355,6 @@ public static class EyeLink
             Debug.LogWarning("[EyeLink] Could not send command: " + exception.Message);
             return false;
         }
-#else
-        return false;
-#endif
     }
 
     /// <summary>Compatibility wrapper retained for the existing maze code.</summary>
@@ -345,6 +398,10 @@ public static class EyeLink
             bool isValid = trackerX != missingData && trackerY != missingData &&
                 !Single.IsNaN(trackerX) && !Single.IsNaN(trackerY) &&
                 !Single.IsInfinity(trackerX) && !Single.IsInfinity(trackerY);
+            Eltype eltype = sample.eltype;
+
+            //ALLF_DATA evt;
+            //eyelink_get_float_data(&evt);
 
             lastSampleTime = sample.time;
             LatestGazeSample = new GazeSample {
@@ -352,7 +409,8 @@ public static class EyeLink
                 trackerPixels = new Vector2(trackerX, trackerY),
                 unityPixels = new Vector2(trackerX, (Screen.height - 1) - trackerY),
                 pupilArea = pupilArea,
-                isValid = isValid
+                isValid = isValid,
+                eltype = eltype
             };
             HasGazeSample = true;
             gazeSample = LatestGazeSample;
@@ -496,7 +554,6 @@ public static class EyeLink
     /// </summary>
     public static void Shutdown(bool downloadEdf = true)
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (shuttingDown || eyelink == null) {
             return;
         }
@@ -522,7 +579,7 @@ public static class EyeLink
                 }
             }
 
-            eyelink.close();
+                eyelink.close();
         }
         catch (Exception exception) {
             Debug.LogWarning("[EyeLink] Shutdown was not completely clean: " + exception.Message);
@@ -537,14 +594,8 @@ public static class EyeLink
             dataFileOpen = false;
             shuttingDown = false;
         }
-#else
-        IsInitialized = false;
-        IsRecording = false;
-        HasGazeSample = false;
-#endif
     }
 
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
     private static void ConfigureTracker() {
         int right = Math.Max(0, Screen.width - 1);
         int bottom = Math.Max(0, Screen.height - 1);
@@ -560,7 +611,6 @@ public static class EyeLink
             "link_sample_data = LEFT,RIGHT,GAZE,GAZERES,AREA,STATUS,INPUT");
         eyelinkUtil.pumpDelay(50);
     }
-#endif
 
     private static bool EnsureConnected(string action)
     {

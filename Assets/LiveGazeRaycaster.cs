@@ -15,7 +15,7 @@ public sealed class LiveGazeRaycaster : MonoBehaviour
 
     [Header("Temporary gaze input")]
     [Tooltip("Use the centre of the subject view instead of EyeLink data.")]
-    [SerializeField] private bool useDummyCenterGaze = true;
+    [SerializeField] private bool useDummyCenterGaze = false;
     [Tooltip("Continue displaying the last valid EyeLink sample between tracker updates.")]
     [SerializeField] private bool keepLastValidSample = true;
 

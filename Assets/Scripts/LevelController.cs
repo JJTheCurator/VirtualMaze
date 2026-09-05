@@ -85,6 +85,11 @@ public class LevelController : MonoBehaviour {
     private CueController cueController = null;
 
     [SerializeField]
+    [Min(0f)]
+    [Tooltip("Seconds of continuous valid gaze on the cue required before it is hidden.")]
+    private float cueGazeDuration = 1f;
+
+    [SerializeField]
     private ParallelPort parallelPort = null;
 
     [SerializeField]
@@ -92,7 +97,7 @@ public class LevelController : MonoBehaviour {
 
     [SerializeField]
     private SessionController sessionController = null;
-    
+
     // cache waitForUnpause for efficiency
     private WaitUntil waitIfPaused;
 
@@ -376,7 +381,40 @@ public class LevelController : MonoBehaviour {
         cueController.ShowCue();
         onSessionTrigger.Invoke(SessionTrigger.TrialStartedTrigger, targetIndex);
 
-        yield return new WaitForSecondsRealtime(3f); // Wait time for showing cue before minimising
+        //yield return new WaitForSecondsRealtime(3f); // Wait time for showing cue before minimising
+
+        double cueGazeStartTrackerTime = double.NaN;
+        double requiredCueGazeMilliseconds = cueGazeDuration * 1000.0;
+        while (true) {
+            EyeLink.GazeSample sample;
+            bool hasNewSample = EyeLink.TryGetLatestSample(out sample);
+
+            if (!hasNewSample) {
+                // Rendering can run faster than new samples arrive. Do not reset
+                // the dwell merely because this frame has no new tracker data.
+                yield return null;
+                continue;
+            }
+
+            bool isLookingAtCue = sample.isValid &&
+                cueController.IsScreenPointInsideCue(sample.unityPixels);
+
+            if (!isLookingAtCue) {
+                cueGazeStartTrackerTime = double.NaN;
+            }
+            else if (double.IsNaN(cueGazeStartTrackerTime) ||
+                sample.trackerTime < cueGazeStartTrackerTime) {
+                // Start a new continuous dwell. The less-than check also handles
+                // the EyeLink millisecond clock wrapping or being reset.
+                cueGazeStartTrackerTime = sample.trackerTime;
+            }
+            else if (sample.trackerTime - cueGazeStartTrackerTime >=
+                requiredCueGazeMilliseconds) {
+                break;
+            }
+
+            yield return null;
+        }
 
         cueController.HideCue();
         if (!disableHint) {

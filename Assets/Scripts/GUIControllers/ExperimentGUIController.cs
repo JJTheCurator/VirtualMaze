@@ -200,7 +200,7 @@ public class ExperimentGUIController : DataGUIController {
             SetInputFieldValid(saveLocationField, true);
         }
         else {
-            SetInputFieldValid(saveLocationField, true);
+            SetInputFieldValid(saveLocationField, false);
         }
     }
 

@@ -1,31 +1,32 @@
 ﻿using UnityEditor;
 using UnityEngine;
 using UnityEditor.UI;
-using UnityEngine.UI;
 
 
 [CustomEditor(typeof(FileSelector), false)]
 [CanEditMultipleObjects]
 public class FileSelectorEditor : InputFieldEditor {
-    FileSelector mytarget;
-
-    SerializedProperty OnPathSelected;
-
-    private void Awake() {
-        mytarget = (FileSelector)target;
-
-    }
+    private SerializedProperty fileBrowser;
+    private SerializedProperty browseButton;
+    private SerializedProperty onPathSelected;
 
     protected override void OnEnable() {
-        OnPathSelected = serializedObject.FindProperty("OnPathSelected");
         base.OnEnable();
+
+        fileBrowser = serializedObject.FindProperty("fb");
+        browseButton = serializedObject.FindProperty("browseBtn");
+        onPathSelected = serializedObject.FindProperty("OnPathSelected");
     }
 
     public override void OnInspectorGUI() {
-        mytarget.fb = (FileBrowser)EditorGUILayout.ObjectField("File Browser", mytarget.fb, typeof(FileBrowser), true);
-        mytarget.browseBtn = (Button)EditorGUILayout.ObjectField("BrowseButton", mytarget.browseBtn, typeof(Button), true);
+        serializedObject.Update();
 
-        EditorGUILayout.PropertyField(OnPathSelected);
+        EditorGUILayout.PropertyField(fileBrowser, new GUIContent("File Browser"));
+        EditorGUILayout.PropertyField(browseButton, new GUIContent("Browse Button"));
+        EditorGUILayout.PropertyField(onPathSelected);
+
+        serializedObject.ApplyModifiedProperties();
+
         base.OnInspectorGUI();
     }
 }

@@ -16,6 +16,9 @@ public sealed class EyeLinkGUIController : BasicGUIController
     [SerializeField]
     private LevelController levelController = null;
 
+    [SerializeField]
+    private LiveGazeRaycaster liveGazeRaycaster = null;
+
     [Header("Tracker actions")]
     [SerializeField]
     private Button calibrationButton = null;
@@ -56,6 +59,10 @@ public sealed class EyeLinkGUIController : BasicGUIController
     {
         if (levelController == null) {
             levelController = FindObjectOfType<LevelController>();
+        }
+
+        if (liveGazeRaycaster == null) {
+            liveGazeRaycaster = FindObjectOfType<LiveGazeRaycaster>();
         }
 
         if (localEdfPathField != null) {
@@ -144,6 +151,17 @@ public sealed class EyeLinkGUIController : BasicGUIController
     public void OnCameraSetupClicked()
     {
         EyeLink.CameraSetup();
+    }
+
+    public void OnDrawGazeCircleToggled(bool value)
+    {
+        if (liveGazeRaycaster == null) {
+            liveGazeRaycaster = FindObjectOfType<LiveGazeRaycaster>();
+        }
+
+        if (liveGazeRaycaster != null) {
+            liveGazeRaycaster.ShowGazeArea = value;
+        }
     }
 
     private static void AddButtonListener(Button button, UnityEngine.Events.UnityAction action)

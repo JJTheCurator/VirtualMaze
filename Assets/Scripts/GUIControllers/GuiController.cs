@@ -226,7 +226,7 @@ public class GuiController : MonoBehaviour {
     }
 
     public void OnCalibrate() {
-        SceneManager.LoadScene("calib_scene");
+        EyeLink.Calibrate();
     }
 
     public void OnPosterToggle(bool value) {

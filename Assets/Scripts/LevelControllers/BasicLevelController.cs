@@ -59,8 +59,7 @@ public class BasicLevelController : MonoBehaviour {
     private void Awake() {
         waitIfPaused = new WaitUntil(() => !isPaused);
 
-        //Prepare Eyelink
-        EyeLink.Initialize();
+        // EyeLink is initialized once by its BeforeSceneLoad runtime hook.
         onSessionTrigger.AddListener(EyeLink.OnSessionTrigger);
 
         GameObject robot = GameObject.FindGameObjectWithTag(Tags.Player);

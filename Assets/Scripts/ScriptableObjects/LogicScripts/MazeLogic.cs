@@ -69,12 +69,12 @@ public abstract class MazeLogic : ScriptableObject, IMazeLogicProvider {
         }
 
         float distance = Vector3.Magnitude(direction);
-        Debug.Log($"dist:{distance} / {RequiredDistance}");
-        Debug.Log($"angle:{angle} / {s_requiredViewAngle}");
+        //Debug.Log($"dist:{distance} / {RequiredDistance}");
+        //Debug.Log($"angle:{angle} / {s_requiredViewAngle}");
         if (distance <= RequiredDistance)
         {
             reward.OnProximityEntered();
-            Debug.Log("Reward prox");
+            //Debug.Log("Reward prox");
             //check if in view angle
             if (angle < s_requiredViewAngle * 0.5f)
             {

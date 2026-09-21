@@ -1,0 +1,25 @@
+Initiating legacy licensing module
+Assertion failed on expression: 'SUCCEEDED(hr)'
+ 
+(Filename: c:\buildslave\unity\build\platformdependent\win\WmiWin32.h Line: 82)
+
+
+LICENSE SYSTEM [2026816 21:11:29] Next license update check is after 2026-08-17T12:49:59
+
+
+LICENSE SYSTEM [2026816 21:11:29]  != RGVmYXVsdCBzdHJpbmc=
+
+BatchMode: Unity has not been activated with a valid License. Could be a new activation or renewal...
+ 
+(Filename: C:\buildslave\unity\build\Platforms/Windows/Modules/LicensingLegacy/WinILicensingAdapter.cpp Line: 43)
+
+DisplayProgressbar: Unity license
+[UnityConnectServicesConfig] config is NOT valid, switching to default
+Request timed out while processing request "https://public-cdn.cloud.unity3d.com/config/production", HTTP error code 0
+.[UnityConnect] Request timed out.
+Cancelling DisplayDialog: Failed to activate/update license Missing or bad username or password. Please try again using valid credentials or contact support@unity3d.com
+This should not be called in batch mode.
+ 
+(Filename: C:\buildslave\unity\build\Editor/Platform/Windows/EditorUtility.cpp Line: 1162)
+
+Exiting without the bug reporter. Application will terminate with return code 1

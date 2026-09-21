@@ -32,6 +32,28 @@ public class RewardArea : MonoBehaviour {
     /// </summary>
     public Renderer blinkLight;
 
+    [Header("Target Picture Sound")]
+    [Tooltip("Optional looping sound emitted by this target while it is selected.")]
+    public AudioClip targetSound;
+
+    [SerializeField]
+    [Range(0f, 1f)]
+    private float targetSoundVolume = 1f;
+
+    [SerializeField]
+    [Tooltip("The sound stays at full volume while the player is within this distance.")]
+    private float targetSoundFullVolumeDistance = 1f;
+
+    [SerializeField]
+    [Tooltip("The sound fades to silence at this distance.")]
+    private float targetSoundSilentDistance = 20f;
+
+    [SerializeField]
+    private bool loopTargetSound = true;
+
+    private AudioSource targetAudioSource;
+    private Transform targetSoundListener;
+
     private static float s_requiredViewAngle = 90f; //default
     private static float s_requiredDistance = 2f; //default
 
@@ -95,7 +117,17 @@ public class RewardArea : MonoBehaviour {
     /// use this instead of <see cref="GameObject.SetActive(bool)"/> so that
     /// code in this script will still run when inactive.
     /// </summary>
-    public bool IsActivated { get; set; } = true;
+    private bool isActivated = true;
+    private bool activationWasExplicitlySet;
+
+    public bool IsActivated {
+        get => isActivated;
+        set {
+            isActivated = value;
+            activationWasExplicitlySet = true;
+            UpdateTargetSoundPlayback();
+        }
+    }
 
     public static float ProximityDistance {
         get => s_proximityDistance;
@@ -165,10 +197,106 @@ public class RewardArea : MonoBehaviour {
             blinkLight.material.DisableKeyword(emissionKeyword);
             blinkState = false;
         }
+
+        SetupTargetSound();
+    }
+
+    private void SetupTargetSound() {
+        if (targetSound == null) {
+            return;
+        }
+
+        Transform soundLocation = target != null
+            ? target
+            : imageRenderer != null ? imageRenderer.transform : transform;
+
+        GameObject soundObject = new GameObject("Target Picture Audio");
+        soundObject.hideFlags = HideFlags.DontSave;
+        soundObject.transform.position = soundLocation.position;
+        soundObject.transform.SetParent(transform, true);
+
+        targetAudioSource = soundObject.AddComponent<AudioSource>();
+        targetAudioSource.clip = targetSound;
+        targetAudioSource.playOnAwake = false;
+        targetAudioSource.loop = loopTargetSound;
+        targetAudioSource.volume = targetSoundVolume;
+        // The current AudioListener belongs to the overhead UI camera, so use
+        // the robot transform for a predictable player-to-picture distance.
+        targetAudioSource.spatialBlend = 0f;
+        targetAudioSource.dopplerLevel = 0f;
+
+        FindTargetSoundListener();
+        UpdateTargetSoundVolume();
+        UpdateTargetSoundPlayback();
+    }
+
+    private void FindTargetSoundListener() {
+        RobotMovement robot = FindObjectOfType<RobotMovement>();
+        if (robot != null) {
+            targetSoundListener = robot.transform;
+        }
+    }
+
+    private void UpdateTargetSoundVolume() {
+        if (targetAudioSource == null) {
+            return;
+        }
+
+        if (targetSoundListener == null) {
+            FindTargetSoundListener();
+            if (targetSoundListener == null) {
+                targetAudioSource.volume = 0f;
+                return;
+            }
+        }
+
+        Vector3 soundPosition = target != null
+            ? target.position
+            : imageRenderer != null ? imageRenderer.transform.position : transform.position;
+        float distance = Vector3.Distance(targetSoundListener.position, soundPosition);
+        float fade = Mathf.InverseLerp(
+            targetSoundFullVolumeDistance,
+            targetSoundSilentDistance,
+            distance);
+        targetAudioSource.volume = targetSoundVolume * (1f - fade);
+    }
+
+    private void UpdateTargetSoundPlayback() {
+        if (targetAudioSource == null) {
+            return;
+        }
+
+        if (activationWasExplicitlySet && isActivated && targetSound != null) {
+            if (!targetAudioSource.isPlaying) {
+                targetAudioSource.Play();
+            }
+        }
+        else if (targetAudioSource.isPlaying) {
+            targetAudioSource.Stop();
+        }
+    }
+
+    private void OnEnable() {
+        UpdateTargetSoundPlayback();
+    }
+
+    private void OnDisable() {
+        if (targetAudioSource != null) {
+            targetAudioSource.Stop();
+        }
+    }
+
+    private void OnValidate() {
+        targetSoundVolume = Mathf.Clamp01(targetSoundVolume);
+        targetSoundFullVolumeDistance = Mathf.Max(0.01f, targetSoundFullVolumeDistance);
+        targetSoundSilentDistance = Mathf.Max(
+            targetSoundFullVolumeDistance + 0.01f,
+            targetSoundSilentDistance);
     }
 
     void Update()
     {
+        UpdateTargetSoundVolume();
         StartCoroutine(BlinkReward(this));
     }
 

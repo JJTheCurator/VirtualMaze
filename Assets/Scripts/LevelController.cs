@@ -85,9 +85,46 @@ public class LevelController : MonoBehaviour {
     private CueController cueController = null;
 
     [SerializeField]
+    private bool useFixedCueDuration = true;
+
+    [SerializeField]
+    [Min(0f)]
+    [Tooltip("Minimum number of seconds that the cue remains visible.")]
+    private float fixedCueDuration = 1f;
+
+    [SerializeField]
+    private bool useCueGazeDuration = false;
+
+    [SerializeField]
     [Min(0f)]
     [Tooltip("Seconds of continuous valid gaze on the cue required before it is hidden.")]
     private float cueGazeDuration = 1f;
+
+    [SerializeField]
+    private bool useCueGazeEventCount = true;
+
+    [SerializeField]
+    [Min(0)]
+    [Tooltip("Number of fixation-start events on the cue required before it is hidden.")]
+    private int cueGazeEventCount = 1;
+
+    public bool UseFixedCueDuration
+    {
+        get { return useFixedCueDuration; }
+        set { useFixedCueDuration = value; }
+    }
+
+    public float FixedCueDurationMilliseconds
+    {
+        get { return fixedCueDuration * 1000f; }
+        set { fixedCueDuration = Mathf.Max(0f, value) / 1000f; }
+    }
+
+    public bool UseCueGazeDuration
+    {
+        get { return useCueGazeDuration; }
+        set { useCueGazeDuration = value; }
+    }
 
     /// <summary>
     /// Continuous valid gaze required before the cue is hidden, exposed in
@@ -97,6 +134,18 @@ public class LevelController : MonoBehaviour {
     {
         get { return cueGazeDuration * 1000f; }
         set { cueGazeDuration = Mathf.Max(0f, value) / 1000f; }
+    }
+
+    public bool UseCueGazeEventCount
+    {
+        get { return useCueGazeEventCount; }
+        set { useCueGazeEventCount = value; }
+    }
+
+    public int RequiredCueGazeEventCount
+    {
+        get { return cueGazeEventCount; }
+        set { cueGazeEventCount = Mathf.Max(0, value); }
     }
 
     [SerializeField]
@@ -390,47 +439,86 @@ public class LevelController : MonoBehaviour {
 
         cueController.ShowCue();
         onSessionTrigger.Invoke(SessionTrigger.TrialStartedTrigger, targetIndex);
+        int nextStartFixationEventIndex = EyeLink.StartFixationEventCount;
+        float cueShownAt = Time.realtimeSinceStartup;
         yield return new WaitForSecondsRealtime(0f);
 
-        //double requiredCueGazeMilliseconds = RequiredCueGazeMilliseconds;
-        //if (EyeLink.openDummy || !EyeLink.IsRecording) {
-        //    // Keep the cue flow usable while developing without tracker data.
-        //    yield return new WaitForSecondsRealtime(
-        //        (float)(requiredCueGazeMilliseconds / 1000.0));
-        //}
-        //else {
-        //    double cueGazeStartTrackerTime = double.NaN;
-        //    while (true) {
-        //        EyeLink.GazeSample sample;
-        //        bool hasNewSample = EyeLink.TryGetLatestSample(out sample);
+        bool trackerAvailable = !EyeLink.openDummy && EyeLink.IsRecording;
+        // Disabled conditions start satisfied; every enabled condition must be
+        // satisfied before the cue is hidden.
+        bool gazeDurationSatisfied = !UseCueGazeDuration;
+        bool gazeEventCountSatisfied = !UseCueGazeEventCount;
+        double cueGazeStartTrackerTime = double.NaN;
+        int cueStartFixationCount = 0;
 
-        //        if (!hasNewSample) {
-        //            // Rendering can run faster than new samples arrive. Do not
-        //            // reset the dwell when this frame has no new tracker data.
-        //            yield return null;
-        //            continue;
-        //        }
+        while (true)
+        {
+            float elapsedSeconds = Time.realtimeSinceStartup - cueShownAt;
+            bool fixedDurationSatisfied = !UseFixedCueDuration ||
+                elapsedSeconds >= fixedCueDuration;
 
-        //        bool isLookingAtCue = sample.isValid &&
-        //            cueController.IsScreenPointInsideCue(sample.unityPixels);
+            if (trackerAvailable)
+            {
+                EyeLink.GazeSample sample;
+                bool hasNewSample = EyeLink.TryGetLatestSample(out sample);
 
-        //        if (!isLookingAtCue) {
-        //            cueGazeStartTrackerTime = double.NaN;
-        //        }
-        //        else if (double.IsNaN(cueGazeStartTrackerTime) ||
-        //            sample.trackerTime < cueGazeStartTrackerTime) {
-        //            // Start a new continuous dwell. The less-than check handles
-        //            // the EyeLink millisecond clock wrapping or being reset.
-        //            cueGazeStartTrackerTime = sample.trackerTime;
-        //        }
-        //        else if (sample.trackerTime - cueGazeStartTrackerTime >=
-        //            requiredCueGazeMilliseconds) {
-        //            break;
-        //        }
+                EyeLink.StartFixation startFixation;
+                while (EyeLink.TryGetStartFixationEvent(
+                    nextStartFixationEventIndex,
+                    out startFixation))
+                {
+                    nextStartFixationEventIndex++;
+                    if (startFixation.isValid &&
+                        cueController.IsScreenPointInsideCue(startFixation.unityPixels))
+                    {
+                        cueStartFixationCount++;
+                    }
+                }
 
-        //        yield return null;
-        //    }
-        //}
+                gazeEventCountSatisfied = !UseCueGazeEventCount ||
+                    cueStartFixationCount >= RequiredCueGazeEventCount;
+
+                if (UseCueGazeDuration && !gazeDurationSatisfied && hasNewSample)
+                {
+                    bool isLookingAtCue = sample.isValid &&
+                        cueController.IsScreenPointInsideCue(sample.unityPixels);
+
+                    if (!isLookingAtCue)
+                    {
+                        cueGazeStartTrackerTime = double.NaN;
+                    }
+                    else if (double.IsNaN(cueGazeStartTrackerTime) ||
+                        sample.trackerTime < cueGazeStartTrackerTime)
+                    {
+                        // Start a new continuous dwell. The less-than check handles
+                        // the EyeLink millisecond clock wrapping or being reset.
+                        cueGazeStartTrackerTime = sample.trackerTime;
+                    }
+                    else if (sample.trackerTime - cueGazeStartTrackerTime >=
+                        RequiredCueGazeMilliseconds)
+                    {
+                        gazeDurationSatisfied = true;
+                    }
+                }
+            }
+
+            if (!trackerAvailable)
+            {
+                // Dummy/offline runs cannot produce fixation events. Treat that
+                // condition as met and use elapsed real time to emulate dwell.
+                gazeEventCountSatisfied = true;
+                gazeDurationSatisfied = !UseCueGazeDuration ||
+                    elapsedSeconds >= cueGazeDuration;
+            }
+
+            if (fixedDurationSatisfied && gazeDurationSatisfied &&
+                gazeEventCountSatisfied)
+            {
+                break;
+            }
+
+            yield return null;
+        }
 
         cueController.HideCue();
         if (!disableHint) {

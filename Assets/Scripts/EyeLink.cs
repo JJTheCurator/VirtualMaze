@@ -37,6 +37,15 @@ public static class EyeLink
 
     }
 
+    /// <summary>A fixation-start event retained from the ordered link queue.</summary>
+    public struct StartFixation
+    {
+        public double trackerTime;
+        public Vector2 trackerPixels;
+        public Vector2 unityPixels;
+        public bool isValid;
+    }
+
     /// <summary>
     /// Keep this true while developing without a physical tracker. Set it to
     /// false before testing the dedicated EyeLink network connection.
@@ -56,6 +65,16 @@ public static class EyeLink
     public static bool IsRecording { get; private set; }
     public static bool HasGazeSample { get; private set; }
     public static GazeSample LatestGazeSample { get; private set; }
+    public static int StartFixationEventCount
+    {
+        get { return startFixationEvents.Count; }
+    }
+    /// <summary>
+    /// Most recently received non-sample link event. Before the first event it
+    /// is EL_SAMPLE_TYPE. Samples do not immediately overwrite this value so a
+    /// short-lived event remains visible in the live gaze overlay.
+    /// </summary>
+    public static Eltype LatestEventType { get; private set; } = Eltype.EL_SAMPLE_TYPE;
     public static string LocalEdfPath
     {
         get
@@ -77,6 +96,9 @@ public static class EyeLink
     private static bool dataFileOpen;
     private static bool shuttingDown;
     private static bool lifecycleCreated;
+    private static bool hasReceivedLinkEvent;
+    private static readonly List<StartFixation> startFixationEvents =
+        new List<StartFixation>();
     private static int eyeLinkTrialNumber;
     private static double lastSampleTime = Double.MinValue;
     private static string remoteEdfName = String.Empty;
@@ -85,6 +107,7 @@ public static class EyeLink
     private const int EnterKey = 0x000D;
     private const short NoKeyModifiers = 0;
     private const short KeyPress = 10;
+    private const int MaximumQueuedItemsPerFrame = 4096;
 
     /// <summary>
     /// Unity invokes this once before loading the first scene. This is the only
@@ -129,6 +152,9 @@ public static class EyeLink
 
             IsInitialized = true;
             HasGazeSample = false;
+            LatestEventType = Eltype.EL_SAMPLE_TYPE;
+            hasReceivedLinkEvent = false;
+            startFixationEvents.Clear();
             LastDownloadedEdf = String.Empty;
 
             if (!openDummy) {
@@ -275,6 +301,8 @@ public static class EyeLink
             return false;
         }
 
+        ResetLiveDataForRecording();
+
         if (openDummy) {
             IsRecording = true;
             return true;
@@ -296,8 +324,6 @@ public static class EyeLink
                 activeEye = Eye.EL_RIGHT;
             }
 
-            lastSampleTime = Double.MinValue;
-            HasGazeSample = false;
             IsRecording = true;
             Debug.Log("[EyeLink] Recording started.");
             return true;
@@ -393,6 +419,9 @@ public static class EyeLink
         }
 
         try {
+            DrainQueuedLinkData();
+            gazeSample = LatestGazeSample;
+
             SREYELINKLib.Sample sample = eyelink.getNewestSample();
             if (sample == null || sample.time == lastSampleTime) {
                 return false;
@@ -416,10 +445,6 @@ public static class EyeLink
             bool isValid = trackerX != missingData && trackerY != missingData &&
                 !Single.IsNaN(trackerX) && !Single.IsNaN(trackerY) &&
                 !Single.IsInfinity(trackerX) && !Single.IsInfinity(trackerY);
-            Eltype eltype = sample.eltype;
-
-            //ALLF_DATA evt;
-            //eyelink_get_float_data(&evt);
 
             lastSampleTime = sample.time;
             LatestGazeSample = new GazeSample {
@@ -428,7 +453,7 @@ public static class EyeLink
                 unityPixels = new Vector2(trackerX, (Screen.height - 1) - trackerY),
                 pupilArea = pupilArea,
                 isValid = isValid,
-                eltype = eltype
+                eltype = LatestEventType
             };
             HasGazeSample = true;
             gazeSample = LatestGazeSample;
@@ -438,6 +463,25 @@ public static class EyeLink
             Debug.LogWarning("[EyeLink] Could not read the newest sample: " + exception.Message);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Reads a retained fixation-start event by its zero-based index. Events are
+    /// reset whenever a new recording begins, so callers can snapshot
+    /// StartFixationEventCount and inspect only later events.
+    /// </summary>
+    public static bool TryGetStartFixationEvent(
+        int eventIndex,
+        out StartFixation startFixation)
+    {
+        if (eventIndex < 0 || eventIndex >= startFixationEvents.Count)
+        {
+            startFixation = default(StartFixation);
+            return false;
+        }
+
+        startFixation = startFixationEvents[eventIndex];
+        return true;
     }
 
     /// <summary>
@@ -609,6 +653,9 @@ public static class EyeLink
             IsInitialized = false;
             IsRecording = false;
             HasGazeSample = false;
+            LatestEventType = Eltype.EL_SAMPLE_TYPE;
+            hasReceivedLinkEvent = false;
+            startFixationEvents.Clear();
             dataFileOpen = false;
             shuttingDown = false;
         }
@@ -624,10 +671,101 @@ public static class EyeLink
         eyelink.sendCommand(
             "file_event_filter = LEFT,RIGHT,FIXATION,SACCADE,BLINK,MESSAGE,BUTTON,INPUT");
         eyelink.sendCommand(
+            "link_event_filter = LEFT,RIGHT,FIXATION,FIXUPDATE,SACCADE,BLINK,MESSAGE,BUTTON,INPUT");
+        eyelink.sendCommand("fixation_update_interval = 50");
+        eyelink.sendCommand("fixation_update_accumulate = 50");
+        eyelink.sendCommand(
             "file_sample_data = LEFT,RIGHT,GAZE,HREF,RAW,AREA,GAZERES,BUTTON,STATUS,INPUT");
         eyelink.sendCommand(
             "link_sample_data = LEFT,RIGHT,GAZE,GAZERES,AREA,STATUS,INPUT");
         eyelinkUtil.pumpDelay(50);
+    }
+
+    /// <summary>
+    /// Drains the ordered link queue so samples cannot hide the less frequent
+    /// blink, saccade, fixation, message, button, input, and lost-data events.
+    /// getNewestSample remains the source of low-latency gaze coordinates.
+    /// </summary>
+    private static void DrainQueuedLinkData()
+    {
+        for (int itemIndex = 0; itemIndex < MaximumQueuedItemsPerFrame; itemIndex++)
+        {
+            SREYELINKLib.ELData linkData = eyelink.getNextData();
+            if (linkData == null)
+            {
+                break;
+            }
+
+            try
+            {
+                Eltype dataType = linkData.eltype;
+                bool isSample = dataType == Eltype.EL_SAMPLE_TYPE ||
+                    dataType == Eltype.EL_RAWSAMPLE_TYPE;
+
+                if (!isSample)
+                {
+                    LatestEventType = dataType;
+                    hasReceivedLinkEvent = true;
+
+                    if (dataType == Eltype.EL_STARTFIX)
+                    {
+                        StoreStartFixation(linkData);
+                    }
+                }
+                else if (!hasReceivedLinkEvent)
+                {
+                    LatestEventType = dataType;
+                }
+            }
+            finally
+            {
+                if (Marshal.IsComObject(linkData))
+                {
+                    Marshal.ReleaseComObject(linkData);
+                }
+            }
+        }
+
+        if (HasGazeSample)
+        {
+            GazeSample latestSample = LatestGazeSample;
+            latestSample.eltype = LatestEventType;
+            LatestGazeSample = latestSample;
+        }
+    }
+
+    private static void StoreStartFixation(SREYELINKLib.ELData linkData)
+    {
+        SREYELINKLib.IStartFixationEvent fixation =
+            linkData as SREYELINKLib.IStartFixationEvent;
+        if (fixation == null ||
+            (activeEye != Eye.EL_EYE_NONE && fixation.eye != activeEye))
+        {
+            return;
+        }
+
+        float trackerX = fixation.gstx;
+        float trackerY = fixation.gsty;
+        float missingData = (float)SREYELINKLib.EL_CONSTANT.EL_MISSING_DATA;
+        bool isValid = trackerX != missingData && trackerY != missingData &&
+            !Single.IsNaN(trackerX) && !Single.IsNaN(trackerY) &&
+            !Single.IsInfinity(trackerX) && !Single.IsInfinity(trackerY);
+
+        startFixationEvents.Add(new StartFixation {
+            trackerTime = fixation.time,
+            trackerPixels = new Vector2(trackerX, trackerY),
+            unityPixels = new Vector2(trackerX, (Screen.height - 1) - trackerY),
+            isValid = isValid
+        });
+    }
+
+    private static void ResetLiveDataForRecording()
+    {
+        lastSampleTime = Double.MinValue;
+        HasGazeSample = false;
+        LatestEventType = Eltype.EL_SAMPLE_TYPE;
+        hasReceivedLinkEvent = false;
+        startFixationEvents.Clear();
     }
 
     private static bool RunTrackerSetupMode(

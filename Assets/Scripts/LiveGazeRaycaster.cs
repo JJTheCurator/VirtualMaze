@@ -257,8 +257,7 @@ public sealed class LiveGazeRaycaster : MonoBehaviour
 
     private void OnGUI()
     {
-        if (!showGazeArea || !HasCurrentRay || gazeCamera == null ||
-            gazeAreaTexture == null)
+        if (!HasCurrentRay || gazeCamera == null)
         {
             return;
         }
@@ -272,25 +271,30 @@ public sealed class LiveGazeRaycaster : MonoBehaviour
             diameter,
             diameter);
 
-        Color previousColor = GUI.color;
-        GUI.color = CurrentObject != null ? hitAreaColor : missAreaColor;
-        GUI.DrawTexture(gazeRect, gazeAreaTexture, ScaleMode.StretchToFill, true);
-        GUI.color = previousColor;
+        if (showGazeArea && gazeAreaTexture != null)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = CurrentObject != null ? hitAreaColor : missAreaColor;
+            GUI.DrawTexture(gazeRect, gazeAreaTexture, ScaleMode.StretchToFill, true);
+            GUI.color = previousColor;
+        }
 
         if (showRayStatus)
         {
             EnsureStatusStyle();
-            string source = useDummyCenterGaze ? "DUMMY CENTER" : "EYELINK";
+            string eventType = useDummyCenterGaze
+                ? "DUMMY CENTER"
+                : EyeLink.LatestEventType.ToString();
             string hitText = CurrentObject == null
                 ? "RAY: NO HIT"
                 : "RAY: " + CurrentObject.name + " (" +
                     CurrentHit.distance.ToString("0.00") + "m)";
             Rect labelRect = new Rect(
-                gazeScreenPoint.x - 130f,
+                gazeScreenPoint.x - 180f,
                 Screen.height - gazeScreenPoint.y + gazeAreaRadiusPixels + 4f,
-                260f,
+                360f,
                 22f);
-            GUI.Label(labelRect, source + "  |  " + hitText, statusStyle);
+            GUI.Label(labelRect, eventType + "  |  " + hitText, statusStyle);
         }
     }
 

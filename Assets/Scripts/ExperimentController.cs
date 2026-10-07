@@ -165,18 +165,21 @@ public class ExperimentController : ConfigurableComponent {
 
             PrepareLevelController();
 
-            //validate logger
-            SessionContext context = new SessionContext(session, SaveLoad.getCurrentSettings(), RewardArea.GetAllRewardsFromScene());
+            // Load the maze before collecting its rewards for the session header.
+            yield return lvlController.PrepareSession(session);
+
+            SessionContext context = new SessionContext(session, SaveLoad.getCurrentSettings(), lvlController.rewards);
             if (!logger.OpenSessionLog(sessionIndex, context)) {
                 Console.WriteError("failed to create save files");
                 StopExperiment();
+                yield break;
             }
 
             //start logging robotmovement
             robot.OnRobotMoved += OnRobotMoved;
 
             //start the scene
-            yield return lvlController.StartSession(session);
+            yield return lvlController.RunPreparedSession();
 
             robot.OnRobotMoved -= OnRobotMoved;
             logger.CloseLog();

@@ -68,7 +68,7 @@ public class SessionContext {
 
         foreach (RewardArea reward in rewards) {
             if (reward.target != null) {
-                PosterLocations.Add(new PosterLocation(reward.target.position, reward.target.name));
+                PosterLocations.Add(new PosterLocation(reward.target.position, reward.cueImage.name));
             }
         }
 

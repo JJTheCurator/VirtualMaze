@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -439,23 +440,23 @@ public class RewardArea : MonoBehaviour {
     public static RewardArea[] GetAllRewardsFromScene() {
         //Find all rewardAreas in scene and populate rewards[].
         GameObject[] objs = GameObject.FindGameObjectsWithTag(Tags.RewardArea);
-        RewardArea[] tempArr = new RewardArea[objs.Length];
+        List<RewardArea> rewards = new List<RewardArea>(objs.Length);
 
         for (int i = 0; i < objs.Length; i++) {
             RewardArea area = objs[i].GetComponent<RewardArea>();
             if (area != null) {
-                tempArr[i] = area;
+                rewards.Add(area);
 
                 // Deactivate all rewards at the start.
                 area.IsActivated = false;
             }
             else {
-                Debug.LogWarning(string.Format(Format_NoRewardAreaComponentFound, objs[0].name));
+                Debug.LogWarning(string.Format(Format_NoRewardAreaComponentFound, objs[i].name));
             }
         }
 
-        Array.Sort(tempArr, (a1, a2) => a1.rewardOrder.CompareTo(a2.rewardOrder));
+        rewards.Sort((a1, a2) => a1.rewardOrder.CompareTo(a2.rewardOrder));
 
-        return tempArr;
+        return rewards.ToArray();
     }
 }

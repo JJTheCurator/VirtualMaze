@@ -241,7 +241,7 @@ public class LevelController : MonoBehaviour {
         StopAllCoroutines();
     }
 
-    public IEnumerator StartSession(Session session) {
+    public IEnumerator PrepareSession(Session session) {
         //prepare the scene
         AsyncOperation task = SceneManager.LoadSceneAsync(session.MazeScene, LoadSceneMode.Single);
         task.allowSceneActivation = true;
@@ -261,7 +261,15 @@ public class LevelController : MonoBehaviour {
 
         //disable robot movement
         robotMovement.SetMovementActive(false);
+    }
+
+    public IEnumerator RunPreparedSession() {
         yield return MainLoop();
+    }
+
+    public IEnumerator StartSession(Session session) {
+        yield return PrepareSession(session);
+        yield return RunPreparedSession();
     }
 
     IEnumerator MainLoop() {

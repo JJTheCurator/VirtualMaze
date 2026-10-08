@@ -3,6 +3,8 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.SceneManagement;
 
+using Eltype = SREYELINKLib.EL_DATA_TYPE;
+
 public class LevelController : MonoBehaviour {
     /// <summary>
     /// Triggers when the player enters the reward area
@@ -447,7 +449,7 @@ public class LevelController : MonoBehaviour {
 
         cueController.ShowCue();
         onSessionTrigger.Invoke(SessionTrigger.TrialStartedTrigger, targetIndex);
-        int nextStartFixationEventIndex = EyeLink.StartFixationEventCount;
+        int processedStartFixationEventCount = EyeLink.StartFixationEventCount;
         float cueShownAt = Time.realtimeSinceStartup;
         yield return new WaitForSecondsRealtime(0f);
 
@@ -470,17 +472,18 @@ public class LevelController : MonoBehaviour {
                 EyeLink.GazeSample sample;
                 bool hasNewSample = EyeLink.TryGetLatestSample(out sample);
 
-                EyeLink.StartFixation startFixation;
-                while (EyeLink.TryGetStartFixationEvent(
-                    nextStartFixationEventIndex,
-                    out startFixation))
+                int latestStartFixationEventCount = EyeLink.StartFixationEventCount;
+                int newStartFixationEventCount = Mathf.Max(
+                    0,
+                    latestStartFixationEventCount - processedStartFixationEventCount);
+                processedStartFixationEventCount = latestStartFixationEventCount;
+
+                if (newStartFixationEventCount > 0 &&
+                    sample.isValid &&
+                    sample.eltype == Eltype.EL_STARTFIX &&
+                    cueController.IsScreenPointInsideCue(sample.unityPixels))
                 {
-                    nextStartFixationEventIndex++;
-                    if (startFixation.isValid &&
-                        cueController.IsScreenPointInsideCue(startFixation.unityPixels))
-                    {
-                        cueStartFixationCount++;
-                    }
+                    cueStartFixationCount += newStartFixationEventCount;
                 }
 
                 gazeEventCountSatisfied = !UseCueGazeEventCount ||

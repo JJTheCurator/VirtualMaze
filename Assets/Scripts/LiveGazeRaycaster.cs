@@ -279,7 +279,7 @@ public sealed class LiveGazeRaycaster : MonoBehaviour
             GUI.color = previousColor;
         }
 
-        if (showRayStatus)
+        if (showGazeArea && showRayStatus)
         {
             EnsureStatusStyle();
             string eventType = useDummyCenterGaze

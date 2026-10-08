@@ -12,12 +12,19 @@ using Eltype = SREYELINKLib.EL_DATA_TYPE;
 
 
 /// <summary>
-/// Owns the EyeLink connection used by the maze.
+/// Owns the EyeLink connection, recording lifecycle, and live gaze data used by
+/// the maze.
 ///
 /// This project uses the EyeLink Developers Kit directly through
 /// Interop.SREYELINKLib.dll. It does not use the UDP WebLink transport from the
-/// Unity WebLink example. Initialize is safe to call more than once because
-/// several level controllers call it from Awake.
+/// Unity WebLink example. Unity starts the service before the first scene and a
+/// hidden lifecycle object shuts it down when Play Mode or the application ends.
+/// <see cref="Initialize"/> is idempotent so callers may also use it to recover a
+/// lost connection.
+///
+/// Tracker pixels use a top-left origin. Unity pixels exposed by this class use
+/// a bottom-left origin. Live queue access and the EyeLink COM objects are
+/// expected to remain on Unity's main thread.
 /// </summary>
 public static class EyeLink
 {
@@ -26,24 +33,29 @@ public static class EyeLink
     private static extern IntPtr GetActiveWindow();
 #endif
 
+    /// <summary>A gaze sample expressed in both tracker and Unity coordinates.</summary>
     public struct GazeSample
     {
+        /// <summary>EyeLink timestamp in milliseconds.</summary>
         public double trackerTime;
+
+        /// <summary>Display pixel position with the tracker's top-left origin.</summary>
         public Vector2 trackerPixels;
+
+        /// <summary>Display pixel position with Unity's bottom-left origin.</summary>
         public Vector2 unityPixels;
+
+        /// <summary>Pupil area reported by the active eye.</summary>
         public float pupilArea;
+
+        /// <summary>Whether both gaze coordinates contain usable values.</summary>
         public bool isValid;
+
+        /// <summary>
+        /// Most recently queued EyeLink event type when this sample was read.
+        /// This is deliberately not the sample object's own data type.
+        /// </summary>
         public Eltype eltype;
-
-    }
-
-    /// <summary>A fixation-start event retained from the ordered link queue.</summary>
-    public struct StartFixation
-    {
-        public double trackerTime;
-        public Vector2 trackerPixels;
-        public Vector2 unityPixels;
-        public bool isValid;
     }
 
     /// <summary>
@@ -61,20 +73,43 @@ public static class EyeLink
     /// </summary>
     public static string edfBaseName = "VMAZE";
 
+    /// <summary>Whether the service currently owns a live tracker connection.</summary>
     public static bool IsInitialized { get; private set; }
+
+    /// <summary>Whether an EyeLink recording block is currently active.</summary>
     public static bool IsRecording { get; private set; }
+
+    /// <summary>Whether a gaze sample has been received in the current recording.</summary>
     public static bool HasGazeSample { get; private set; }
+
+    /// <summary>
+    /// Most recently received gaze sample. Check <see cref="HasGazeSample"/> and
+    /// <see cref="GazeSample.isValid"/> before using its coordinates.
+    /// </summary>
     public static GazeSample LatestGazeSample { get; private set; }
+
+    /// <summary>
+    /// Number of fixation-start events received for the active eye in the
+    /// current recording. The count resets when recording starts or the service
+    /// shuts down, so callers can snapshot it and compare later values.
+    /// </summary>
     public static int StartFixationEventCount
     {
-        get { return startFixationEvents.Count; }
+        get { return startFixationEventCount; }
     }
+
     /// <summary>
     /// Most recently received non-sample link event. Before the first event it
     /// is EL_SAMPLE_TYPE. Samples do not immediately overwrite this value so a
     /// short-lived event remains visible in the live gaze overlay.
     /// </summary>
     public static Eltype LatestEventType { get; private set; } = Eltype.EL_SAMPLE_TYPE;
+
+    /// <summary>
+    /// Exact local destination for the next downloaded EDF. A timestamped path
+    /// under <see cref="Application.persistentDataPath"/> is created lazily when
+    /// no destination has been selected.
+    /// </summary>
     public static string LocalEdfPath
     {
         get
@@ -86,8 +121,16 @@ public static class EyeLink
             return localEdfPath;
         }
     }
+    /// <summary>
+    /// Local path of the EDF downloaded by the most recent successful shutdown,
+    /// or an empty string when no file has been downloaded.
+    /// </summary>
     public static string LastDownloadedEdf { get; private set; } = String.Empty;
 
+    /// <summary>
+    /// Raw EyeLink COM connection. Prefer the service methods in this class;
+    /// this remains public for legacy integrations that require SDK access.
+    /// </summary>
     public static ELink eyelink;
 
     private static ELinkUtil eyelinkUtil;
@@ -97,8 +140,7 @@ public static class EyeLink
     private static bool shuttingDown;
     private static bool lifecycleCreated;
     private static bool hasReceivedLinkEvent;
-    private static readonly List<StartFixation> startFixationEvents =
-        new List<StartFixation>();
+    private static int startFixationEventCount;
     private static int eyeLinkTrialNumber;
     private static double lastSampleTime = Double.MinValue;
     private static string remoteEdfName = String.Empty;
@@ -121,6 +163,11 @@ public static class EyeLink
         Initialize();
     }
 
+    /// <summary>
+    /// Connects to the configured tracker (or dummy tracker), configures live
+    /// data, and opens the Host EDF. Repeated calls are safe while connected.
+    /// Failures are logged and leave the service uninitialized.
+    /// </summary>
     public static void Initialize()
     {
         if (IsInitialized && TryGetEyelinkConnectedStatus()) {
@@ -154,7 +201,7 @@ public static class EyeLink
             HasGazeSample = false;
             LatestEventType = Eltype.EL_SAMPLE_TYPE;
             hasReceivedLinkEvent = false;
-            startFixationEvents.Clear();
+            startFixationEventCount = 0;
             LastDownloadedEdf = String.Empty;
 
             if (!openDummy) {
@@ -168,6 +215,8 @@ public static class EyeLink
         }
     }
 
+    /// <summary>Checks the current EyeLink connection without throwing.</summary>
+    /// <returns><c>true</c> when the COM connection reports that it is connected.</returns>
     public static bool TryGetEyelinkConnectedStatus()
     {
         try {
@@ -179,12 +228,14 @@ public static class EyeLink
     }
 
     /// <summary>Starts calibration directly from the EyeLink setup screen.</summary>
+    /// <returns><c>true</c> when the setup operation completes successfully.</returns>
     public static bool Calibration()
     {
         return RunTrackerSetupMode("calibration", 'c', false);
     }
 
     /// <summary>Runs drift detection/correction at the center of the display.</summary>
+    /// <returns><c>true</c> when drift correction completes successfully.</returns>
     public static bool DriftDetection()
     {
         return RunCalibrationWindow("drift detection", delegate(int width, int height) {
@@ -197,18 +248,21 @@ public static class EyeLink
     }
 
     /// <summary>Starts validation directly from the EyeLink setup screen.</summary>
+    /// <returns><c>true</c> when validation completes successfully.</returns>
     public static bool Validation()
     {
         return RunTrackerSetupMode("validation", 'v', false);
     }
 
     /// <summary>Opens the EyeLink camera image/setup screen.</summary>
+    /// <returns><c>true</c> when the camera setup operation completes successfully.</returns>
     public static bool CameraSetup()
     {
         return RunTrackerSetupMode("camera setup", EnterKey, true);
     }
 
     /// <summary>Compatibility wrapper retained for existing UI/code.</summary>
+    /// <returns>The result of <see cref="Calibration"/>.</returns>
     public static bool Calibrate()
     {
         return Calibration();
@@ -218,6 +272,9 @@ public static class EyeLink
     /// Sets the exact local EDF destination. Selecting a directory generates a
     /// timestamped EDF filename inside it.
     /// </summary>
+    /// <param name="requestedPath">An EDF file path or output directory.</param>
+    /// <param name="resolvedPath">The resulting absolute EDF file path.</param>
+    /// <returns><c>true</c> when the path is valid and its directory is available.</returns>
     public static bool TrySetLocalEdfPath(string requestedPath, out string resolvedPath)
     {
         resolvedPath = LocalEdfPath;
@@ -257,9 +314,13 @@ public static class EyeLink
         }
     }
 
+    /// <summary>
+    /// Opens the normalized EDF filename on the EyeLink Host. Dummy mode treats
+    /// this as a successful no-op.
+    /// </summary>
+    /// <returns><c>true</c> when the file is open or no file is needed.</returns>
     public static bool OpenDataFile()
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (!EnsureConnected("open an EDF file")) {
             return false;
         }
@@ -281,18 +342,15 @@ public static class EyeLink
             Debug.LogError("[EyeLink] Could not open the EDF: " + exception.Message);
             return false;
         }
-#else
-        return false;
-#endif
     }
 
     /// <summary>
     /// Starts file samples/events and link samples/events. Dummy mode tracks the
     /// same lifecycle but does not create tracker data.
     /// </summary>
+    /// <returns><c>true</c> when recording is active after the call.</returns>
     public static bool StartRecording()
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (IsRecording) {
             return true;
         }
@@ -333,14 +391,14 @@ public static class EyeLink
             IsRecording = false;
             return false;
         }
-#else
-        return false;
-#endif
     }
 
+    /// <summary>
+    /// Stops the active recording and returns the tracker to offline mode. Safe
+    /// to call when no recording is active.
+    /// </summary>
     public static void StopRecording()
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (!IsRecording) {
             return;
         }
@@ -359,12 +417,13 @@ public static class EyeLink
         finally {
             IsRecording = false;
         }
-#endif
     }
 
+    /// <summary>Sends a single sanitized message line to the EyeLink Host.</summary>
+    /// <param name="message">Message to store in the EDF event stream.</param>
+    /// <returns><c>true</c> when the Host accepts the message.</returns>
     public static bool SendMessage(string message)
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (String.IsNullOrWhiteSpace(message) || !EnsureConnected("send a message")) {
             return false;
         }
@@ -378,12 +437,13 @@ public static class EyeLink
             Debug.LogWarning("[EyeLink] Could not send message: " + exception.Message);
             return false;
         }
-#else
         Debug.Log("[EyeLink] Did not send message on this platform: " + message);
         return false;
-#endif
     }
 
+    /// <summary>Sends a single sanitized tracker command.</summary>
+    /// <param name="command">Command text understood by the EyeLink Host.</param>
+    /// <returns><c>true</c> when the Host accepts the command.</returns>
     public static bool SendCommand(string command)
     {
         if (String.IsNullOrWhiteSpace(command) || !EnsureConnected("send a command")) {
@@ -402,6 +462,7 @@ public static class EyeLink
     }
 
     /// <summary>Compatibility wrapper retained for the existing maze code.</summary>
+    /// <param name="msg">Message to forward to <see cref="SendMessage"/>.</param>
     public static void TryEyemsg_Printf(String msg)
     {
         SendMessage(msg);
@@ -411,6 +472,11 @@ public static class EyeLink
     /// Gets the newest right-eye (or monocular) link sample. Tracker coordinates
     /// use a top-left origin; Unity coordinates use a bottom-left origin.
     /// </summary>
+    /// <param name="gazeSample">
+    /// The newest sample, or the previously cached sample when no newer tracker
+    /// timestamp is available.
+    /// </param>
+    /// <returns><c>true</c> only when a sample with a new timestamp was read.</returns>
     public static bool TryGetLatestSample(out GazeSample gazeSample)
     {
         gazeSample = LatestGazeSample;
@@ -466,28 +532,10 @@ public static class EyeLink
     }
 
     /// <summary>
-    /// Reads a retained fixation-start event by its zero-based index. Events are
-    /// reset whenever a new recording begins, so callers can snapshot
-    /// StartFixationEventCount and inspect only later events.
-    /// </summary>
-    public static bool TryGetStartFixationEvent(
-        int eventIndex,
-        out StartFixation startFixation)
-    {
-        if (eventIndex < 0 || eventIndex >= startFixationEvents.Count)
-        {
-            startFixation = default(StartFixation);
-            return false;
-        }
-
-        startFixation = startFixationEvents[eventIndex];
-        return true;
-    }
-
-    /// <summary>
     /// WebLink-example-compatible sample shape: tracker X, tracker Y, pupil area.
     /// Returns an empty list when no new valid sample is available.
     /// </summary>
+    /// <returns>A three-value sample list, or an empty list.</returns>
     public static List<float> GetSampleData()
     {
         GazeSample gazeSample;
@@ -507,6 +555,12 @@ public static class EyeLink
     /// Returns renderer bounds in EyeLink screen coordinates (top-left origin).
     /// This is the transport-independent interest-area helper from the example.
     /// </summary>
+    /// <param name="gameObject">Rendered scene object whose bounds should be projected.</param>
+    /// <returns>A pixel rectangle using the tracker's top-left origin.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="gameObject"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The object has no renderer or the scene has no main camera.
+    /// </exception>
     public static Rect GetScreenRectFromGameObject(GameObject gameObject)
     {
         if (gameObject == null)
@@ -562,6 +616,8 @@ public static class EyeLink
     /// treated as one EyeLink trial because TrialStartedTrigger is emitted once
     /// per task/cue.
     /// </summary>
+    /// <param name="trigger">Maze lifecycle event to mirror in the EDF.</param>
+    /// <param name="triggerValue">Target index or version value associated with the event.</param>
     public static void OnSessionTrigger(SessionTrigger trigger, int triggerValue)
     {
         if (!TryGetEyelinkConnectedStatus())
@@ -614,6 +670,9 @@ public static class EyeLink
     /// the tracker link. The lifecycle helper invokes this when Play Mode or the
     /// standalone application exits.
     /// </summary>
+    /// <param name="downloadEdf">
+    /// Whether to copy the closed Host EDF to <see cref="LocalEdfPath"/>.
+    /// </param>
     public static void Shutdown(bool downloadEdf = true)
     {
         if (shuttingDown || eyelink == null) {
@@ -655,7 +714,7 @@ public static class EyeLink
             HasGazeSample = false;
             LatestEventType = Eltype.EL_SAMPLE_TYPE;
             hasReceivedLinkEvent = false;
-            startFixationEvents.Clear();
+            startFixationEventCount = 0;
             dataFileOpen = false;
             shuttingDown = false;
         }
@@ -709,7 +768,7 @@ public static class EyeLink
 
                     if (dataType == Eltype.EL_STARTFIX)
                     {
-                        StoreStartFixation(linkData);
+                        CountStartFixation(linkData);
                     }
                 }
                 else if (!hasReceivedLinkEvent)
@@ -734,7 +793,12 @@ public static class EyeLink
         }
     }
 
-    private static void StoreStartFixation(SREYELINKLib.ELData linkData)
+    /// <summary>
+    /// Counts fixation starts for the selected eye. Coordinates come from the
+    /// low-latency sample stream; the ordered queue is used only to count each
+    /// event once.
+    /// </summary>
+    private static void CountStartFixation(SREYELINKLib.ELData linkData)
     {
         SREYELINKLib.IStartFixationEvent fixation =
             linkData as SREYELINKLib.IStartFixationEvent;
@@ -744,19 +808,7 @@ public static class EyeLink
             return;
         }
 
-        float trackerX = fixation.gstx;
-        float trackerY = fixation.gsty;
-        float missingData = (float)SREYELINKLib.EL_CONSTANT.EL_MISSING_DATA;
-        bool isValid = trackerX != missingData && trackerY != missingData &&
-            !Single.IsNaN(trackerX) && !Single.IsNaN(trackerY) &&
-            !Single.IsInfinity(trackerX) && !Single.IsInfinity(trackerY);
-
-        startFixationEvents.Add(new StartFixation {
-            trackerTime = fixation.time,
-            trackerPixels = new Vector2(trackerX, trackerY),
-            unityPixels = new Vector2(trackerX, (Screen.height - 1) - trackerY),
-            isValid = isValid
-        });
+        startFixationEventCount++;
     }
 
     private static void ResetLiveDataForRecording()
@@ -765,7 +817,7 @@ public static class EyeLink
         HasGazeSample = false;
         LatestEventType = Eltype.EL_SAMPLE_TYPE;
         hasReceivedLinkEvent = false;
-        startFixationEvents.Clear();
+        startFixationEventCount = 0;
     }
 
     private static bool RunTrackerSetupMode(
@@ -782,7 +834,6 @@ public static class EyeLink
                     return;
                 }
 
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
                 // doTrackerSetup owns the native message loop. A WinForms timer
                 // injects the requested setup key after that loop has started.
                 using (System.Windows.Forms.Timer setupTimer =
@@ -799,7 +850,6 @@ public static class EyeLink
                     setupTimer.Start();
                     eyelink.doTrackerSetup();
                 }
-#endif
             }
             finally {
                 eyelink.setTrackerSetupDefault(0);
@@ -811,7 +861,6 @@ public static class EyeLink
         string operation,
         Action<int, int> trackerAction)
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
         if (!EnsureConnected(operation)) {
             return false;
         }
@@ -872,10 +921,6 @@ public static class EyeLink
             Debug.LogError("[EyeLink] " + operation + " failed: " + exception.Message);
             return false;
         }
-#else
-        Debug.LogWarning("[EyeLink] " + operation + " is only supported on Windows.");
-        return false;
-#endif
     }
 
     private static bool EnsureConnected(string action)

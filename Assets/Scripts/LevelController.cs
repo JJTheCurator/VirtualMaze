@@ -3,8 +3,6 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.SceneManagement;
 
-using Eltype = SREYELINKLib.EL_DATA_TYPE;
-
 public class LevelController : MonoBehaviour {
     /// <summary>
     /// Triggers when the player enters the reward area
@@ -447,9 +445,10 @@ public class LevelController : MonoBehaviour {
         Debug.Log($"TST \"{(int)SessionTrigger.TrialStartedTrigger}\" in use");
         Debug.Log($"TI \"{(int)targetIndex + 1}\" in use");
 
+        EyeLink.PollLinkEvents();
         cueController.ShowCue();
         onSessionTrigger.Invoke(SessionTrigger.TrialStartedTrigger, targetIndex);
-        int processedStartFixationEventCount = EyeLink.StartFixationEventCount;
+        int nextStartFixationEventIndex = EyeLink.StartFixationEventCount;
         float cueShownAt = Time.realtimeSinceStartup;
         yield return new WaitForSecondsRealtime(0f);
 
@@ -469,27 +468,25 @@ public class LevelController : MonoBehaviour {
 
             if (trackerAvailable)
             {
-                EyeLink.GazeSample sample;
-                bool hasNewSample = EyeLink.TryGetLatestSample(out sample);
-
-                int latestStartFixationEventCount = EyeLink.StartFixationEventCount;
-                int newStartFixationEventCount = Mathf.Max(
-                    0,
-                    latestStartFixationEventCount - processedStartFixationEventCount);
-                processedStartFixationEventCount = latestStartFixationEventCount;
-
-                if (newStartFixationEventCount > 0 &&
-                    sample.isValid &&
-                    sample.eltype == Eltype.EL_STARTFIX &&
-                    cueController.IsScreenPointInsideCue(sample.unityPixels))
+                EyeLink.PollLinkEvents();
+                EyeLink.StartFixation startFixation;
+                while (EyeLink.TryGetStartFixationEvent(
+                    nextStartFixationEventIndex, out startFixation))
                 {
-                    cueStartFixationCount += newStartFixationEventCount;
+                    nextStartFixationEventIndex++;
+                    if (startFixation.isValid &&
+                        cueController.IsScreenPointInsideCue(startFixation.unityPixels))
+                    {
+                        cueStartFixationCount++;
+                    }
                 }
 
                 gazeEventCountSatisfied = !UseCueGazeEventCount ||
                     cueStartFixationCount >= RequiredCueGazeEventCount;
 
-                if (UseCueGazeDuration && !gazeDurationSatisfied && hasNewSample)
+                EyeLink.GazeSample sample;
+                if (UseCueGazeDuration && !gazeDurationSatisfied &&
+                    EyeLink.TryGetLatestSample(out sample))
                 {
                     bool isLookingAtCue = sample.isValid &&
                         cueController.IsScreenPointInsideCue(sample.unityPixels);

@@ -222,10 +222,14 @@
     <Compile Include="Assets\Scripts\Wrappers\EdfAccess\IMESSAGE.cs" />
     <Compile Include="Assets\Scripts\Wrappers\EdfAccess\IOEVENT.cs" />
     <Compile Include="Assets\Scripts\Wrappers\EdfAccess\RECORDINGS.cs" />
+    <None Include="Assets\session_1_1510202609531.txt" />
+    <None Include="Assets\session_1_15102026094556.txt" />
     <None Include="Assets\RockVR\Video\Shaders\DownsamplePro.shader" />
+    <None Include="Assets\session_1_15102026095824.txt" />
     <None Include="Assets\session_1_810202610415.txt" />
     <None Include="Assets\RockVR\Video\Shaders\Cubemap2Equirectangular.shader" />
     <None Include="Assets\session_1_810202610238.txt" />
+    <None Include="Assets\session_1_15102026093721.txt" />
     <None Include="Assets\session_1_810202610543.txt" />
     <None Include="Assets\session_1_810202610168.txt" />
     <None Include="Assets\session_1_8102026101850.txt" />
@@ -247,7 +251,10 @@
     <None Include="Assets\session_1_8102026101340.txt" />
     <None Include="Assets\RockVR\Video\Shaders\Stereoscopic.shader" />
     <None Include="Assets\RockVR\Video\Shaders\CopyReverse.shader" />
+    <None Include="Assets\session_1_15102026095647.txt" />
+    <None Include="Assets\session_1_1510202610126.txt" />
     <None Include="Assets\session_1_81020261031.txt" />
+    <None Include="Assets\session_1_15102026101337.txt" />
     <None Include="Assets\session_1_8102026103443.txt" />
     <Reference Include="Unity.Timeline.Editor">
       <HintPath>C:/git/VirtualMaze/Library/ScriptAssemblies/Unity.Timeline.Editor.dll</HintPath>

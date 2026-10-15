@@ -12441,7 +12441,7 @@ MonoBehaviour:
   maximumDistance: 1000
   useDummyCenterGaze: 0
   keepLastValidSample: 1
-  showGazeArea: 0
+  showGazeArea: 1
   gazeAreaRadiusPixels: 42
   hitAreaColor: {r: 0.15, g: 1, b: 0.35, a: 1}
   missAreaColor: {r: 1, g: 0.75, b: 0.1, a: 1}

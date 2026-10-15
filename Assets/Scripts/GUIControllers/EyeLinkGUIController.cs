@@ -47,6 +47,9 @@ public sealed class EyeLinkGUIController : BasicGUIController
     [SerializeField]
     private Button cameraSetupButton = null;
 
+    [SerializeField]
+    private Toggle drawGazeCircleToggle = null;
+
     private void Awake()
     {
         if (localEdfPathField == null) {
@@ -105,6 +108,11 @@ public sealed class EyeLinkGUIController : BasicGUIController
             localEdfPathField.text = EyeLink.LocalEdfPath;
             localEdfPathField.defaultPath = Path.GetDirectoryName(EyeLink.LocalEdfPath);
             SetInputFieldNeutral(localEdfPathField);
+        }
+
+        if (drawGazeCircleToggle != null)
+        {
+            OnDrawGazeCircleToggled(drawGazeCircleToggle.isOn);
         }
 
         if (levelController == null) {

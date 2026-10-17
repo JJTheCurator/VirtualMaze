@@ -1093,14 +1093,33 @@ public static class EyeLink
                 }
 
                 // doTrackerSetup owns the native message loop. A WinForms timer
-                // injects the requested setup key after that loop has started.
+                // first waits until that loop reports setup mode, then starts a
+                // fresh one-second delay before injecting the requested key.
                 using (System.Windows.Forms.Timer setupTimer =
                     new System.Windows.Forms.Timer()) {
-                    // Give the EyeLink setup screen time to become ready before
-                    // requesting calibration or validation.
-                    setupTimer.Interval = 1000;
+                    bool setupScreenDetected = false;
+                    setupTimer.Interval = 50;
                     setupTimer.Tick += delegate {
+                        if (!setupScreenDetected) {
+                            if (!eyelink.inSetup()) {
+                                return;
+                            }
+
+                            setupScreenDetected = true;
+                            setupTimer.Stop();
+                            setupTimer.Interval = 1000;
+                            setupTimer.Start();
+                            ReportStatus(
+                                "[EyeLink] Setup screen ready; waiting one second " +
+                                "before requesting " + operation + ".");
+                            return;
+                        }
+
                         if (!eyelink.inSetup()) {
+                            setupScreenDetected = false;
+                            setupTimer.Stop();
+                            setupTimer.Interval = 50;
+                            setupTimer.Start();
                             return;
                         }
 

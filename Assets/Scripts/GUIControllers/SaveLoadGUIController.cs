@@ -49,7 +49,9 @@ public class SaveLoadGUIController : MonoBehaviour {
 
     public void OnOptionSelectedAction(int index) {
         Debug.Log("Selected option" + index);
-        if (index == -1) {
+        // Index zero is the explicit "no selection" entry used by
+        // MyDropdownScript so the first real setting can raise a change event.
+        if (index <= 0 || index >= settingListDropdown.options.Count) {
             return;
         }
         string settingName = settingListDropdown.options[index].text;

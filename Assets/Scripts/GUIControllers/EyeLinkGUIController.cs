@@ -1,11 +1,50 @@
+using System;
 using System.Globalization;
 using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>Connects the EyeLink settings panel to the tracker and level.</summary>
-public sealed class EyeLinkGUIController : BasicGUIController
+public sealed class EyeLinkGUIController : ConfigurableComponent
 {
+    [Serializable]
+    public sealed class Settings : ComponentSettings
+    {
+        public string localEdfPath;
+        public bool useFixedCueDuration;
+        public float fixedCueDurationMilliseconds;
+        public bool useCueGazeDuration;
+        public float requiredCueGazeMilliseconds;
+        public bool useCueGazeEventCount;
+        public int requiredCueGazeEventCount;
+        public bool drawGazeCircle;
+        public bool rewardDuringCalibration;
+
+        public Settings(
+            string localEdfPath,
+            bool useFixedCueDuration,
+            float fixedCueDurationMilliseconds,
+            bool useCueGazeDuration,
+            float requiredCueGazeMilliseconds,
+            bool useCueGazeEventCount,
+            int requiredCueGazeEventCount,
+            bool drawGazeCircle,
+            bool rewardDuringCalibration)
+        {
+            this.localEdfPath = localEdfPath;
+            this.useFixedCueDuration = useFixedCueDuration;
+            this.fixedCueDurationMilliseconds = fixedCueDurationMilliseconds;
+            this.useCueGazeDuration = useCueGazeDuration;
+            this.requiredCueGazeMilliseconds = requiredCueGazeMilliseconds;
+            this.useCueGazeEventCount = useCueGazeEventCount;
+            this.requiredCueGazeEventCount = requiredCueGazeEventCount;
+            this.drawGazeCircle = drawGazeCircle;
+            this.rewardDuringCalibration = rewardDuringCalibration;
+        }
+    }
+
+    private static readonly Color ErrorColor = new Color(1f, 0.35f, 0.35f);
+
     [Header("Settings")]
     [SerializeField]
     private FileSelector localEdfPathField = null;
@@ -50,8 +89,23 @@ public sealed class EyeLinkGUIController : BasicGUIController
     [SerializeField]
     private Toggle drawGazeCircleToggle = null;
 
-    private void Awake()
+    [SerializeField]
+    private Toggle calibrationRewardToggle = null;
+
+    [SerializeField]
+    private RewardsController rewardsController = null;
+
+    private bool calibrationRewardsEnabled;
+    private bool isRefreshingSettingsUi;
+
+    protected override void Awake()
     {
+        ResolveReferences();
+
+        // Apply defaults and register with the settings manager before wiring
+        // UI callbacks, so initialization does not look like user input.
+        base.Awake();
+
         if (localEdfPathField == null) {
             localEdfPathField = GetComponentInChildren<FileSelector>(true);
         }
@@ -88,6 +142,16 @@ public sealed class EyeLinkGUIController : BasicGUIController
                 OnCueGazeEventCountToggled);
         }
 
+        if (calibrationRewardToggle != null) {
+            calibrationRewardToggle.onValueChanged.AddListener(
+                OnCalibrationRewardToggled);
+        }
+
+        if (drawGazeCircleToggle != null) {
+            drawGazeCircleToggle.onValueChanged.AddListener(
+                OnDrawGazeCircleToggled);
+        }
+
         AddButtonListener(calibrationButton, OnCalibrationClicked);
         AddButtonListener(driftDetectionButton, OnDriftDetectionClicked);
         AddButtonListener(validationButton, OnValidationClicked);
@@ -96,50 +160,8 @@ public sealed class EyeLinkGUIController : BasicGUIController
 
     private void Start()
     {
-        if (levelController == null) {
-            levelController = FindObjectOfType<LevelController>();
-        }
-
-        if (liveGazeRaycaster == null) {
-            liveGazeRaycaster = FindObjectOfType<LiveGazeRaycaster>();
-        }
-
-        if (localEdfPathField != null) {
-            localEdfPathField.text = EyeLink.LocalEdfPath;
-            localEdfPathField.defaultPath = Path.GetDirectoryName(EyeLink.LocalEdfPath);
-            SetInputFieldNeutral(localEdfPathField);
-        }
-
-        if (drawGazeCircleToggle != null)
-        {
-            OnDrawGazeCircleToggled(drawGazeCircleToggle.isOn);
-        }
-
-        if (levelController == null) {
-            return;
-        }
-
-        SetMillisecondsField(
-            fixedCueDurationMillisecondsField,
-            levelController.FixedCueDurationMilliseconds);
-        SetMillisecondsField(
-            requiredCueGazeMillisecondsField,
-            levelController.RequiredCueGazeMilliseconds);
-
-        if (requiredCueGazeEventCountField != null) {
-            requiredCueGazeEventCountField.text =
-                levelController.RequiredCueGazeEventCount.ToString(
-                    CultureInfo.InvariantCulture);
-            SetInputFieldNeutral(requiredCueGazeEventCountField);
-        }
-
-        SetToggleValue(fixedCueDurationToggle, levelController.UseFixedCueDuration);
-        SetToggleValue(cueGazeDurationToggle, levelController.UseCueGazeDuration);
-        SetToggleValue(cueGazeEventCountToggle, levelController.UseCueGazeEventCount);
-
-        OnFixedCueDurationToggled(levelController.UseFixedCueDuration);
-        OnCueGazeDurationToggled(levelController.UseCueGazeDuration);
-        OnCueGazeEventCountToggled(levelController.UseCueGazeEventCount);
+        ResolveReferences();
+        RefreshSettingsUi();
     }
 
     private void OnDestroy()
@@ -176,6 +198,16 @@ public sealed class EyeLinkGUIController : BasicGUIController
                 OnCueGazeEventCountToggled);
         }
 
+        if (calibrationRewardToggle != null) {
+            calibrationRewardToggle.onValueChanged.RemoveListener(
+                OnCalibrationRewardToggled);
+        }
+
+        if (drawGazeCircleToggle != null) {
+            drawGazeCircleToggle.onValueChanged.RemoveListener(
+                OnDrawGazeCircleToggled);
+        }
+
         RemoveButtonListener(calibrationButton, OnCalibrationClicked);
         RemoveButtonListener(driftDetectionButton, OnDriftDetectionClicked);
         RemoveButtonListener(validationButton, OnValidationClicked);
@@ -191,6 +223,10 @@ public sealed class EyeLinkGUIController : BasicGUIController
         if (isValid) {
             localEdfPathField.text = resolvedPath;
             localEdfPathField.defaultPath = Path.GetDirectoryName(resolvedPath);
+            WriteEyeLinkStatus("EDF output path updated.");
+        }
+        else {
+            WriteEyeLinkError("The selected EDF output path is invalid.");
         }
     }
 
@@ -255,6 +291,10 @@ public sealed class EyeLinkGUIController : BasicGUIController
 
     private void OnFixedCueDurationToggled(bool value)
     {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+
         if (levelController != null) {
             levelController.UseFixedCueDuration = value;
         }
@@ -264,6 +304,10 @@ public sealed class EyeLinkGUIController : BasicGUIController
 
     private void OnCueGazeDurationToggled(bool value)
     {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+
         if (levelController != null) {
             levelController.UseCueGazeDuration = value;
         }
@@ -273,6 +317,10 @@ public sealed class EyeLinkGUIController : BasicGUIController
 
     private void OnCueGazeEventCountToggled(bool value)
     {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+
         if (levelController != null) {
             levelController.UseCueGazeEventCount = value;
         }
@@ -282,7 +330,10 @@ public sealed class EyeLinkGUIController : BasicGUIController
 
     public void OnCalibrationClicked()
     {
-        EyeLink.Calibration();
+        Action<int> rewardCallback = calibrationRewardsEnabled
+            ? (Action<int>)OnCalibrationPointAccepted
+            : null;
+        EyeLink.Calibration(rewardCallback);
     }
 
     public void OnDriftDetectionClicked()
@@ -302,12 +353,246 @@ public sealed class EyeLinkGUIController : BasicGUIController
 
     public void OnDrawGazeCircleToggled(bool value)
     {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+
         if (liveGazeRaycaster == null) {
             liveGazeRaycaster = FindObjectOfType<LiveGazeRaycaster>();
         }
 
         if (liveGazeRaycaster != null) {
             liveGazeRaycaster.ShowGazeArea = value;
+        }
+    }
+
+    private void OnCalibrationRewardToggled(bool value)
+    {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+
+        calibrationRewardsEnabled = value;
+        WriteEyeLinkStatus(
+            value
+                ? "Calibration rewards enabled."
+                : "Calibration rewards disabled.");
+    }
+
+    private void OnCalibrationPointAccepted(int pointNumber)
+    {
+        if (rewardsController == null) {
+            rewardsController = FindObjectOfType<RewardsController>();
+        }
+
+        if (rewardsController == null) {
+            WriteEyeLinkError(
+                "Calibration point " + pointNumber +
+                " was accepted, but no RewardsController was found.");
+            return;
+        }
+
+        if (rewardsController.CalibrationReward()) {
+            WriteEyeLinkStatus(
+                "Calibration reward sent for point " + pointNumber + ".");
+        }
+        else {
+            WriteEyeLinkError(
+                "Calibration point " + pointNumber +
+                " was accepted, but the reward port could not be opened.");
+        }
+    }
+
+    public override Type GetSettingsType()
+    {
+        return typeof(Settings);
+    }
+
+    public override ComponentSettings GetDefaultSettings()
+    {
+        return new Settings(
+            String.Empty,
+            true,
+            1000f,
+            false,
+            1000f,
+            true,
+            1,
+            false,
+            false);
+    }
+
+    public override ComponentSettings GetCurrentSettings()
+    {
+        ResolveReferences();
+
+        return new Settings(
+            EyeLink.LocalEdfPath,
+            levelController == null || levelController.UseFixedCueDuration,
+            levelController == null
+                ? 1000f
+                : levelController.FixedCueDurationMilliseconds,
+            levelController != null && levelController.UseCueGazeDuration,
+            levelController == null
+                ? 1000f
+                : levelController.RequiredCueGazeMilliseconds,
+            levelController == null || levelController.UseCueGazeEventCount,
+            levelController == null
+                ? 1
+                : levelController.RequiredCueGazeEventCount,
+            liveGazeRaycaster != null && liveGazeRaycaster.ShowGazeArea,
+            calibrationRewardsEnabled);
+    }
+
+    protected override void ApplySettings(ComponentSettings loadedSettings)
+    {
+        Settings settings = loadedSettings as Settings;
+        if (settings == null) {
+            WriteEyeLinkError("The saved EyeLink settings have an invalid format.");
+            return;
+        }
+
+        ResolveReferences();
+        calibrationRewardsEnabled = settings.rewardDuringCalibration;
+
+        if (!String.IsNullOrEmpty(settings.localEdfPath)) {
+            string unused;
+            if (!EyeLink.TrySetLocalEdfPath(settings.localEdfPath, out unused)) {
+                WriteEyeLinkError(
+                    "The saved EDF path is unavailable; the current path was kept.");
+            }
+        }
+
+        if (levelController != null) {
+            levelController.UseFixedCueDuration = settings.useFixedCueDuration;
+            levelController.FixedCueDurationMilliseconds =
+                Math.Max(0f, settings.fixedCueDurationMilliseconds);
+            levelController.UseCueGazeDuration = settings.useCueGazeDuration;
+            levelController.RequiredCueGazeMilliseconds =
+                Math.Max(0f, settings.requiredCueGazeMilliseconds);
+            levelController.UseCueGazeEventCount = settings.useCueGazeEventCount;
+            levelController.RequiredCueGazeEventCount =
+                Math.Max(0, settings.requiredCueGazeEventCount);
+        }
+
+        if (liveGazeRaycaster != null) {
+            liveGazeRaycaster.ShowGazeArea = settings.drawGazeCircle;
+        }
+
+        RefreshSettingsUi();
+    }
+
+    private void ResolveReferences()
+    {
+        if (levelController == null) {
+            levelController = FindObjectOfType<LevelController>();
+        }
+
+        if (liveGazeRaycaster == null) {
+            liveGazeRaycaster = FindObjectOfType<LiveGazeRaycaster>();
+        }
+
+        if (rewardsController == null) {
+            rewardsController = FindObjectOfType<RewardsController>();
+        }
+
+        if (localEdfPathField == null) {
+            localEdfPathField = GetComponentInChildren<FileSelector>(true);
+        }
+
+        if (calibrationRewardToggle == null) {
+            Toggle[] toggles = GetComponentsInChildren<Toggle>(true);
+            foreach (Toggle toggle in toggles) {
+                if (toggle.name == "CalibrationRewardToggle") {
+                    calibrationRewardToggle = toggle;
+                    break;
+                }
+            }
+        }
+
+        if (calibrationRewardToggle == null) {
+            GameObject toggleObject = GameObject.Find("CalibrationRewardToggle");
+            if (toggleObject != null) {
+                calibrationRewardToggle = toggleObject.GetComponent<Toggle>();
+            }
+        }
+    }
+
+    private void RefreshSettingsUi()
+    {
+        isRefreshingSettingsUi = true;
+        try {
+            if (localEdfPathField != null) {
+                localEdfPathField.text = EyeLink.LocalEdfPath;
+                localEdfPathField.defaultPath =
+                    Path.GetDirectoryName(EyeLink.LocalEdfPath);
+                SetInputFieldNeutral(localEdfPathField);
+            }
+
+            if (levelController != null) {
+                SetMillisecondsField(
+                    fixedCueDurationMillisecondsField,
+                    levelController.FixedCueDurationMilliseconds);
+                SetMillisecondsField(
+                    requiredCueGazeMillisecondsField,
+                    levelController.RequiredCueGazeMilliseconds);
+
+                if (requiredCueGazeEventCountField != null) {
+                    requiredCueGazeEventCountField.text =
+                        levelController.RequiredCueGazeEventCount.ToString(
+                            CultureInfo.InvariantCulture);
+                    SetInputFieldNeutral(requiredCueGazeEventCountField);
+                }
+
+                SetToggleValue(
+                    fixedCueDurationToggle,
+                    levelController.UseFixedCueDuration);
+                SetToggleValue(
+                    cueGazeDurationToggle,
+                    levelController.UseCueGazeDuration);
+                SetToggleValue(
+                    cueGazeEventCountToggle,
+                    levelController.UseCueGazeEventCount);
+                SetInputFieldInteractable(
+                    fixedCueDurationMillisecondsField,
+                    levelController.UseFixedCueDuration);
+                SetInputFieldInteractable(
+                    requiredCueGazeMillisecondsField,
+                    levelController.UseCueGazeDuration);
+                SetInputFieldInteractable(
+                    requiredCueGazeEventCountField,
+                    levelController.UseCueGazeEventCount);
+            }
+
+            SetToggleValue(calibrationRewardToggle, calibrationRewardsEnabled);
+            SetToggleValue(
+                drawGazeCircleToggle,
+                liveGazeRaycaster != null && liveGazeRaycaster.ShowGazeArea);
+        }
+        finally {
+            isRefreshingSettingsUi = false;
+        }
+    }
+
+    private static void WriteEyeLinkStatus(string message)
+    {
+        string text = "[EyeLink] " + message;
+        if (Console.Instance != null) {
+            Console.Write(text);
+        }
+        else {
+            Debug.Log(text);
+        }
+    }
+
+    private static void WriteEyeLinkError(string message)
+    {
+        string text = "[EyeLink] " + message;
+        if (Console.Instance != null) {
+            Console.WriteError(text);
+        }
+        else {
+            Debug.LogError(text);
         }
     }
 
@@ -345,6 +630,24 @@ public sealed class EyeLinkGUIController : BasicGUIController
             field.onValueChanged.RemoveListener(changedAction);
             field.onEndEdit.RemoveListener(submittedAction);
         }
+    }
+
+    private static void SetInputFieldValid(InputField field, bool valid)
+    {
+        if (field == null || field.textComponent == null) {
+            return;
+        }
+
+        field.textComponent.color = valid ? Color.green : ErrorColor;
+    }
+
+    private static void SetInputFieldNeutral(InputField field)
+    {
+        if (field == null || field.textComponent == null) {
+            return;
+        }
+
+        field.textComponent.color = Color.black;
     }
 
     private void SetMillisecondsField(InputField field, float milliseconds)

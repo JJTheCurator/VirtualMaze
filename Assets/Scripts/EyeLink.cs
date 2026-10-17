@@ -170,6 +170,167 @@ public static class EyeLink
     private const ushort ReadGazePosition = 0x1000;
 
     /// <summary>
+    /// Forwards EyeLink's standard GDI calibration interface while observing
+    /// target and completion beeps. A new-target beep means the preceding
+    /// target was collected; a successful done beep accounts for the final
+    /// target.
+    /// </summary>
+    [ComVisible(true)]
+    [ClassInterface(ClassInterfaceType.None)]
+    private sealed class CalibrationPointCallback : SREYELINKLib.Calibration
+    {
+        private readonly SREYELINKLib.ELGDICal inner;
+        private Action<int> onPointAccepted;
+        private bool hasPresentedTarget;
+        private bool calibrationSequenceActive;
+        private int acceptedPointCount;
+
+        private const short CalibrationMode = 11;
+
+        public CalibrationPointCallback(
+            SREYELINKLib.ELGDICal inner,
+            Action<int> onPointAccepted)
+        {
+            this.inner = inner;
+            this.onPointAccepted = onPointAccepted;
+        }
+
+        public void DisablePointCallbacks()
+        {
+            onPointAccepted = null;
+        }
+
+        public void setupCalibrationDisplay()
+        {
+            hasPresentedTarget = false;
+            calibrationSequenceActive = false;
+            acceptedPointCount = 0;
+            inner.setupCalibrationDisplay();
+        }
+
+        public void clearCalibrationDisplay()
+        {
+            inner.clearCalibrationDisplay();
+        }
+
+        public void drawCalibrationTarget(short x, short y)
+        {
+            inner.drawCalibrationTarget(x, y);
+        }
+
+        public void eraseCalibrationTarget()
+        {
+            inner.eraseCalibrationTarget();
+        }
+
+        public void exitCalibrationDisplay()
+        {
+            inner.exitCalibrationDisplay();
+        }
+
+        public void setupImageDisplay(short width, short height)
+        {
+            inner.setupImageDisplay(width, height);
+        }
+
+        public void drawCameraImage(stdole.IPicture cameraImage)
+        {
+            inner.drawCameraImage(cameraImage);
+        }
+
+        public void setImageTitle(string title)
+        {
+            inner.setImageTitle(title);
+        }
+
+        public void exitImageDisplay()
+        {
+            inner.exitImageDisplay();
+        }
+
+        public void playCalibrationBeep(SREYELINKLib.CAL_BEEP_ID beepId)
+        {
+            inner.playCalibrationBeep(beepId);
+
+            if (beepId != SREYELINKLib.CAL_BEEP_ID.CAL_TARG_BEEP) {
+                return;
+            }
+
+            if (eyelink == null || eyelink.getCurrentMode() != CalibrationMode) {
+                hasPresentedTarget = false;
+                calibrationSequenceActive = false;
+                return;
+            }
+
+            calibrationSequenceActive = true;
+
+            if (hasPresentedTarget) {
+                NotifyPointAccepted();
+            }
+
+            hasPresentedTarget = true;
+        }
+
+        public void playDoneBeep(short error)
+        {
+            inner.playDoneBeep(error);
+
+            if (error == 0 && calibrationSequenceActive && hasPresentedTarget) {
+                NotifyPointAccepted();
+            }
+
+            hasPresentedTarget = false;
+            calibrationSequenceActive = false;
+            acceptedPointCount = 0;
+        }
+
+        public int[] getInputKey()
+        {
+            return inner.getInputKey();
+        }
+
+        public void recordAbortHide()
+        {
+            inner.recordAbortHide();
+        }
+
+        public void alert(string text)
+        {
+            inner.alert(text);
+        }
+
+        public void allocateResource()
+        {
+            inner.allocateResource();
+        }
+
+        public void releaseResource()
+        {
+            inner.releaseResource();
+        }
+
+        private void NotifyPointAccepted()
+        {
+            acceptedPointCount++;
+            ReportStatus(
+                "[EyeLink] Calibration point " + acceptedPointCount + " accepted.");
+
+            Action<int> callback = onPointAccepted;
+            if (callback == null) {
+                return;
+            }
+
+            try {
+                callback(acceptedPointCount);
+            }
+            catch (Exception exception) {
+                ReportError(
+                    "[EyeLink] Calibration reward failed: " + exception.Message);
+            }
+        }
+    }
+
+    /// <summary>
     /// Unity invokes this once before loading the first scene. This is the only
     /// automatic connection entry point; level controllers only subscribe to
     /// session events.
@@ -202,17 +363,17 @@ public static class EyeLink
 
             if (openDummy) {
                 eyelink.dummyOpen();
-                Debug.Log("[EyeLink] Connected in dummy mode.");
+                ReportStatus("[EyeLink] Connected in dummy mode.");
             }
             else {
-                eyelink.open("100.1.1.1", 0);
+                eyelink.open(trackerAddress, 0);
                 //eyelink.open();
                 if (!eyelink.isConnected()) {
                     throw new InvalidOperationException(
                         "The EyeLink Host did not accept a connection at " + trackerAddress + ".");
                 }
 
-                Debug.Log("[EyeLink] Connected to " + trackerAddress + ".");
+                ReportStatus("[EyeLink] Connected to " + trackerAddress + ".");
             }
 
             IsInitialized = true;
@@ -225,7 +386,7 @@ public static class EyeLink
             }
         }
         catch (Exception exception) {
-            Debug.LogError("[EyeLink] Initialization failed: " + exception.Message);
+            ReportError("[EyeLink] Initialization failed: " + exception.Message);
             Shutdown(false);
         }
     }
@@ -246,7 +407,16 @@ public static class EyeLink
     /// <returns><c>true</c> when the setup operation completes successfully.</returns>
     public static bool Calibration()
     {
-        return RunTrackerSetupMode("calibration", 'c', false);
+        return Calibration(null);
+    }
+
+    /// <summary>
+    /// Starts calibration and invokes <paramref name="onPointAccepted"/> once
+    /// for every collected calibration target. Point numbers are one-based.
+    /// </summary>
+    public static bool Calibration(Action<int> onPointAccepted)
+    {
+        return RunTrackerSetupMode("calibration", 'c', false, onPointAccepted);
     }
 
     /// <summary>Runs drift detection/correction at the center of the display.</summary>
@@ -266,14 +436,14 @@ public static class EyeLink
     /// <returns><c>true</c> when validation completes successfully.</returns>
     public static bool Validation()
     {
-        return RunTrackerSetupMode("validation", 'v', false);
+        return RunTrackerSetupMode("validation", 'v', false, null);
     }
 
     /// <summary>Opens the EyeLink camera image/setup screen.</summary>
     /// <returns><c>true</c> when the camera setup operation completes successfully.</returns>
     public static bool CameraSetup()
     {
-        return RunTrackerSetupMode("camera setup", EnterKey, true);
+        return RunTrackerSetupMode("camera setup", EnterKey, true, null);
     }
 
     /// <summary>Compatibility wrapper retained for existing UI/code.</summary>
@@ -350,11 +520,11 @@ public static class EyeLink
             dataFileOpen = true;
             eyelink.sendMessage("DISPLAY_COORDS 0 0 " +
                 Math.Max(0, Screen.width - 1) + " " + Math.Max(0, Screen.height - 1));
-            Debug.Log("[EyeLink] Opened Host EDF " + remoteEdfName + ".");
+            ReportStatus("[EyeLink] Opened Host EDF " + remoteEdfName + ".");
             return true;
         }
         catch (Exception exception) {
-            Debug.LogError("[EyeLink] Could not open the EDF: " + exception.Message);
+            ReportError("[EyeLink] Could not open the EDF: " + exception.Message);
             return false;
         }
     }
@@ -398,11 +568,11 @@ public static class EyeLink
             }
 
             IsRecording = true;
-            Debug.Log("[EyeLink] Recording started.");
+            ReportStatus("[EyeLink] Recording started.");
             return true;
         }
         catch (Exception exception) {
-            Debug.LogError("[EyeLink] Could not start recording: " + exception.Message);
+            ReportError("[EyeLink] Could not start recording: " + exception.Message);
             IsRecording = false;
             return false;
         }
@@ -423,7 +593,7 @@ public static class EyeLink
                 eyelinkUtil.pumpDelay(100);
                 eyelink.stopRecording();
                 eyelink.setOfflineMode();
-                Debug.Log("[EyeLink] Recording stopped.");
+                ReportStatus("[EyeLink] Recording stopped.");
             }
         }
         catch (Exception exception) {
@@ -759,7 +929,7 @@ public static class EyeLink
                     string localEdfPath = BuildLocalEdfPath();
                     eyelink.receiveDataFile(remoteEdfName, localEdfPath);
                     LastDownloadedEdf = localEdfPath;
-                    Debug.Log("[EyeLink] Downloaded EDF to " + localEdfPath + ".");
+                    ReportStatus("[EyeLink] Downloaded EDF to " + localEdfPath + ".");
                 }
             }
 
@@ -910,7 +1080,8 @@ public static class EyeLink
     private static bool RunTrackerSetupMode(
         string operation,
         int setupKey,
-        bool startInCameraMode)
+        bool startInCameraMode,
+        Action<int> onCalibrationPointAccepted)
     {
         return RunCalibrationWindow(operation, delegate(int width, int height) {
             eyelink.setTrackerSetupDefault((short)(startInCameraMode ? 1 : 0));
@@ -925,7 +1096,9 @@ public static class EyeLink
                 // injects the requested setup key after that loop has started.
                 using (System.Windows.Forms.Timer setupTimer =
                     new System.Windows.Forms.Timer()) {
-                    setupTimer.Interval = 100;
+                    // Give the EyeLink setup screen time to become ready before
+                    // requesting calibration or validation.
+                    setupTimer.Interval = 1000;
                     setupTimer.Tick += delegate {
                         if (!eyelink.inSetup()) {
                             return;
@@ -933,6 +1106,8 @@ public static class EyeLink
 
                         setupTimer.Stop();
                         eyelink.sendKeybutton(setupKey, NoKeyModifiers, KeyPress);
+                        ReportStatus(
+                            "[EyeLink] Requested " + operation + " mode.");
                     };
                     setupTimer.Start();
                     eyelink.doTrackerSetup();
@@ -941,23 +1116,25 @@ public static class EyeLink
             finally {
                 eyelink.setTrackerSetupDefault(0);
             }
-        });
+        }, onCalibrationPointAccepted);
     }
 
     private static bool RunCalibrationWindow(
         string operation,
-        Action<int, int> trackerAction)
+        Action<int, int> trackerAction,
+        Action<int> onCalibrationPointAccepted = null)
     {
         if (!EnsureConnected(operation)) {
             return false;
         }
 
         if (openDummy) {
-            Debug.Log("[EyeLink] " + operation + " skipped in dummy mode.");
+            ReportStatus("[EyeLink] " + operation + " skipped in dummy mode.");
             return true;
         }
 
         try {
+            ReportStatus("[EyeLink] Starting " + operation + ".");
             StopRecording();
             IntPtr unityWindow = GetActiveWindow();
             if (unityWindow == IntPtr.Zero) {
@@ -992,20 +1169,31 @@ public static class EyeLink
                 SREYELINKLib.ELGDICal cal = eyelinkUtil.getGDICal();
                 cal.setCalibrationWindow(calibrationWindow.Handle.ToInt32());
                 cal.enableKeyCollection(true);
+                CalibrationPointCallback pointCallback = null;
+
+                if (onCalibrationPointAccepted != null) {
+                    pointCallback = new CalibrationPointCallback(
+                        cal,
+                        onCalibrationPointAccepted);
+                    eyelinkUtil.setCalibrationInterface(pointCallback);
+                }
 
                 try {
                     trackerAction(width, height);
                 }
                 finally {
+                    if (pointCallback != null) {
+                        pointCallback.DisablePointCallbacks();
+                    }
                     cal.enableKeyCollection(false);
                 }
             }
 
-            Debug.Log("[EyeLink] " + operation + " finished.");
+            ReportStatus("[EyeLink] " + operation + " finished.");
             return true;
         }
         catch (Exception exception) {
-            Debug.LogError("[EyeLink] " + operation + " failed: " + exception.Message);
+            ReportError("[EyeLink] " + operation + " failed: " + exception.Message);
             return false;
         }
     }
@@ -1024,6 +1212,26 @@ public static class EyeLink
 
         Debug.LogWarning("[EyeLink] Cannot " + action + " because EyeLink is not connected.");
         return false;
+    }
+
+    private static void ReportStatus(string message)
+    {
+        if (Console.Instance != null) {
+            Console.Write(message);
+        }
+        else {
+            Debug.Log(message);
+        }
+    }
+
+    private static void ReportError(string message)
+    {
+        if (Console.Instance != null) {
+            Console.WriteError(message);
+        }
+        else {
+            Debug.LogError(message);
+        }
     }
 
     private static void CreateLifecycleObject()

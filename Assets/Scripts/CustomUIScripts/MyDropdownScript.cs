@@ -8,7 +8,10 @@ public class MyDropdownScript : Dropdown {
     //drag and drop in Unity GUI
     public InputField inputField;
 
-    private readonly List<string> empty = new List<string> { "empty" };
+    // Keep a non-setting option at index zero. Unity's Dropdown starts at zero,
+    // so without this sentinel choosing the first real setting does not change
+    // the value and therefore does not raise onValueChanged.
+    private readonly List<string> noSelection = new List<string> { "" };
 
     public string text {
         get => inputField.text;
@@ -24,7 +27,7 @@ public class MyDropdownScript : Dropdown {
     }
 
     public void UpdateInputField(int selected) {
-        if (-1 == selected) {
+        if (selected <= 0 || selected >= options.Count) {
             inputField.text = "";
             return;
         }
@@ -36,18 +39,16 @@ public class MyDropdownScript : Dropdown {
         Hide();
     }
 
-    public void UpdateOptions(List<string> options, int selectItem) {
+    public void UpdateOptions(List<string> newOptions, int selectItem) {
         ClearOptions();
-        if (options.Count > 0) {
-            AddOptions(options);
-        }
-        else {
-            AddOptions(empty);
-        }
+        AddOptions(noSelection);
+        AddOptions(newOptions);
 
-        if (selectItem > 0) {
-            value = selectItem;
-        }
+        int dropdownIndex = selectItem >= 0 && selectItem < newOptions.Count
+            ? selectItem + 1
+            : 0;
+        value = dropdownIndex;
+        UpdateInputField(dropdownIndex);
 
         RefreshShownValue();
     }

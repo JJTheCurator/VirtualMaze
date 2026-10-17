@@ -45,6 +45,15 @@ public class SessionContext {
     public string DisableHint;
     public string EnableRewardAreaError;
     public string RewardAreaErrorTime;
+    public string EyeLinkLocalEdfPath;
+    public string EyeLinkUseFixedCueDuration;
+    public string EyeLinkFixedCueDurationMilliseconds;
+    public string EyeLinkUseCueGazeDuration;
+    public string EyeLinkRequiredCueGazeMilliseconds;
+    public string EyeLinkUseCueGazeEventCount;
+    public string EyeLinkRequiredCueGazeEventCount;
+    public string EyeLinkDrawGazeCircle;
+    public string EyeLinkRewardDuringCalibration;
 
 
     //regex to extract information from string
@@ -75,6 +84,7 @@ public class SessionContext {
         GetJoystickSettings(settings);
         GetRobotMovementSettings(settings);
         GetRewardSettings(settings);
+        GetEyeLinkSettings(settings);
     }
 
     /// <summary>
@@ -262,6 +272,32 @@ public class SessionContext {
             //this values are a must to have. Therefore an exception is thrown
             throw new SaveLoad.SettingNotFoundException("ExperimentController.Settings not found");
         }
+    }
+
+    private void GetEyeLinkSettings(ExperimentSettings settings) {
+        if (!settings.TryGetComponentSetting(
+            out EyeLinkGUIController.Settings eyeLinkSettings)) {
+            // EyeLink settings were added after the original settings format.
+            // Older saved settings and session data are valid without them.
+            return;
+        }
+
+        EyeLinkLocalEdfPath = eyeLinkSettings.localEdfPath ?? String.Empty;
+        EyeLinkUseFixedCueDuration =
+            eyeLinkSettings.useFixedCueDuration.ToString();
+        EyeLinkFixedCueDurationMilliseconds =
+            eyeLinkSettings.fixedCueDurationMilliseconds.ToString();
+        EyeLinkUseCueGazeDuration =
+            eyeLinkSettings.useCueGazeDuration.ToString();
+        EyeLinkRequiredCueGazeMilliseconds =
+            eyeLinkSettings.requiredCueGazeMilliseconds.ToString();
+        EyeLinkUseCueGazeEventCount =
+            eyeLinkSettings.useCueGazeEventCount.ToString();
+        EyeLinkRequiredCueGazeEventCount =
+            eyeLinkSettings.requiredCueGazeEventCount.ToString();
+        EyeLinkDrawGazeCircle = eyeLinkSettings.drawGazeCircle.ToString();
+        EyeLinkRewardDuringCalibration =
+            eyeLinkSettings.rewardDuringCalibration.ToString();
     }
 
     private string GetValue(string line) {

@@ -15,7 +15,7 @@ internal sealed class EyeLinkCalibrationWindow : Form
 
     private bool cursorHidden;
 
-    internal EyeLinkCalibrationWindow(IntPtr unityWindow)
+    internal EyeLinkCalibrationWindow(IntPtr unityWindow, int monitorIndex)
     {
         FormBorderStyle = FormBorderStyle.None;
         ControlBox = false;
@@ -26,7 +26,12 @@ internal sealed class EyeLinkCalibrationWindow : Form
         TopMost = true;
         KeyPreview = true;
         StartPosition = FormStartPosition.Manual;
-        Bounds = System.Windows.Forms.Screen.FromHandle(unityWindow).Bounds;
+
+        Screen[] monitors = Screen.AllScreens;
+        Screen targetMonitor = monitorIndex >= 0 && monitorIndex < monitors.Length
+            ? monitors[monitorIndex]
+            : Screen.FromHandle(unityWindow);
+        Bounds = targetMonitor.Bounds;
 
         // Tracker setup blocks Unity's normal update loop while it is open.
         DisableProcessWindowsGhosting();

@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Runtime.Serialization;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -20,6 +21,12 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         public bool drawGazeCircle;
         public bool rewardDuringCalibration;
 
+        [OptionalField(VersionAdded = 2)]
+        public int calibrationMonitorIndex;
+
+        [OptionalField(VersionAdded = 2)]
+        public bool hasCalibrationMonitorIndex;
+
         public Settings(
             string localEdfPath,
             bool useFixedCueDuration,
@@ -29,7 +36,8 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             bool useCueGazeEventCount,
             int requiredCueGazeEventCount,
             bool drawGazeCircle,
-            bool rewardDuringCalibration)
+            bool rewardDuringCalibration,
+            int calibrationMonitorIndex)
         {
             this.localEdfPath = localEdfPath;
             this.useFixedCueDuration = useFixedCueDuration;
@@ -40,6 +48,8 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             this.requiredCueGazeEventCount = requiredCueGazeEventCount;
             this.drawGazeCircle = drawGazeCircle;
             this.rewardDuringCalibration = rewardDuringCalibration;
+            this.calibrationMonitorIndex = calibrationMonitorIndex;
+            hasCalibrationMonitorIndex = true;
         }
     }
 
@@ -73,6 +83,9 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
     [SerializeField]
     private LiveGazeRaycaster liveGazeRaycaster = null;
 
+    [SerializeField]
+    private Dropdown monitorsListDropDown = null;
+
     [Header("Tracker actions")]
     [SerializeField]
     private Button calibrationButton = null;
@@ -101,6 +114,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
     protected override void Awake()
     {
         ResolveReferences();
+        PopulateMonitorOptions();
 
         // Apply defaults and register with the settings manager before wiring
         // UI callbacks, so initialization does not look like user input.
@@ -150,6 +164,11 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         if (drawGazeCircleToggle != null) {
             drawGazeCircleToggle.onValueChanged.AddListener(
                 OnDrawGazeCircleToggled);
+        }
+
+        if (monitorsListDropDown != null) {
+            monitorsListDropDown.onValueChanged.AddListener(
+                OnCalibrationMonitorChanged);
         }
 
         AddButtonListener(calibrationButton, OnCalibrationClicked);
@@ -206,6 +225,11 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         if (drawGazeCircleToggle != null) {
             drawGazeCircleToggle.onValueChanged.RemoveListener(
                 OnDrawGazeCircleToggled);
+        }
+
+        if (monitorsListDropDown != null) {
+            monitorsListDropDown.onValueChanged.RemoveListener(
+                OnCalibrationMonitorChanged);
         }
 
         RemoveButtonListener(calibrationButton, OnCalibrationClicked);
@@ -366,6 +390,17 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         }
     }
 
+    private void OnCalibrationMonitorChanged(int monitorIndex)
+    {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+
+        EyeLink.CalibrationMonitorIndex = monitorIndex;
+        WriteEyeLinkStatus(
+            "Calibration display set to " + GetMonitorName(monitorIndex) + ".");
+    }
+
     private void OnCalibrationRewardToggled(bool value)
     {
         if (isRefreshingSettingsUi) {
@@ -419,7 +454,8 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             true,
             1,
             false,
-            false);
+            false,
+            EyeLink.GetDefaultCalibrationMonitorIndex());
     }
 
     public override ComponentSettings GetCurrentSettings()
@@ -441,7 +477,8 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
                 ? 1
                 : levelController.RequiredCueGazeEventCount,
             liveGazeRaycaster != null && liveGazeRaycaster.ShowGazeArea,
-            calibrationRewardsEnabled);
+            calibrationRewardsEnabled,
+            EyeLink.CalibrationMonitorIndex);
     }
 
     protected override void ApplySettings(ComponentSettings loadedSettings)
@@ -454,6 +491,9 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
 
         ResolveReferences();
         calibrationRewardsEnabled = settings.rewardDuringCalibration;
+        EyeLink.CalibrationMonitorIndex = settings.hasCalibrationMonitorIndex
+            ? settings.calibrationMonitorIndex
+            : EyeLink.GetDefaultCalibrationMonitorIndex();
 
         if (!String.IsNullOrEmpty(settings.localEdfPath)) {
             string unused;
@@ -500,6 +540,28 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             localEdfPathField = GetComponentInChildren<FileSelector>(true);
         }
 
+        if (monitorsListDropDown == null) {
+            Dropdown[] dropdowns = GetComponentsInChildren<Dropdown>(true);
+            foreach (Dropdown dropdown in dropdowns) {
+                if (dropdown.name == "MonitorsListDropDown" ||
+                    dropdown.name == "MonitorListDropDown") {
+                    monitorsListDropDown = dropdown;
+                    break;
+                }
+            }
+        }
+
+        if (monitorsListDropDown == null) {
+            GameObject dropdownObject = GameObject.Find("MonitorsListDropDown");
+            if (dropdownObject == null) {
+                dropdownObject = GameObject.Find("MonitorListDropDown");
+            }
+
+            if (dropdownObject != null) {
+                monitorsListDropDown = dropdownObject.GetComponent<Dropdown>();
+            }
+        }
+
         if (calibrationRewardToggle == null) {
             Toggle[] toggles = GetComponentsInChildren<Toggle>(true);
             foreach (Toggle toggle in toggles) {
@@ -527,6 +589,12 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
                 localEdfPathField.defaultPath =
                     Path.GetDirectoryName(EyeLink.LocalEdfPath);
                 SetInputFieldNeutral(localEdfPathField);
+            }
+
+            if (monitorsListDropDown != null) {
+                PopulateMonitorOptions();
+                monitorsListDropDown.value = EyeLink.CalibrationMonitorIndex;
+                monitorsListDropDown.RefreshShownValue();
             }
 
             if (levelController != null) {
@@ -572,6 +640,26 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         finally {
             isRefreshingSettingsUi = false;
         }
+    }
+
+    private void PopulateMonitorOptions()
+    {
+        if (monitorsListDropDown == null) {
+            return;
+        }
+
+        monitorsListDropDown.ClearOptions();
+        monitorsListDropDown.AddOptions(
+            new System.Collections.Generic.List<string>(
+                EyeLink.GetCalibrationMonitorNames()));
+    }
+
+    private static string GetMonitorName(int monitorIndex)
+    {
+        string[] monitorNames = EyeLink.GetCalibrationMonitorNames();
+        return monitorIndex >= 0 && monitorIndex < monitorNames.Length
+            ? monitorNames[monitorIndex]
+            : "Display " + (monitorIndex + 1);
     }
 
     private static void WriteEyeLinkStatus(string message)

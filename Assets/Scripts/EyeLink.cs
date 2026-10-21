@@ -33,6 +33,102 @@ public static class EyeLink
     private static extern IntPtr GetActiveWindow();
 #endif
 
+    private static int calibrationMonitorIndex = -1;
+
+    /// <summary>
+    /// Zero-based Windows monitor index used by the EyeLink setup window.
+    /// Invalid values fall back to a monitor other than Unity's when possible.
+    /// </summary>
+    public static int CalibrationMonitorIndex
+    {
+        get { return ResolveCalibrationMonitorIndex(calibrationMonitorIndex); }
+        set { calibrationMonitorIndex = ResolveCalibrationMonitorIndex(value); }
+    }
+
+    /// <summary>Returns labels for the monitors available to the setup window.</summary>
+    public static string[] GetCalibrationMonitorNames()
+    {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        System.Windows.Forms.Screen[] monitors =
+            System.Windows.Forms.Screen.AllScreens;
+        string[] names = new string[monitors.Length];
+        IntPtr unityWindow = GetActiveWindow();
+        System.Windows.Forms.Screen unityMonitor = unityWindow == IntPtr.Zero
+            ? null
+            : System.Windows.Forms.Screen.FromHandle(unityWindow);
+
+        for (int i = 0; i < monitors.Length; i++) {
+            System.Windows.Forms.Screen monitor = monitors[i];
+            List<string> details = new List<string>();
+            details.Add(
+                monitor.Bounds.Width + " x " + monitor.Bounds.Height);
+
+            if (monitor.Primary) {
+                details.Add("Primary");
+            }
+
+            if (unityMonitor != null &&
+                String.Equals(
+                    monitor.DeviceName,
+                    unityMonitor.DeviceName,
+                    StringComparison.OrdinalIgnoreCase)) {
+                details.Add("Unity");
+            }
+
+            names[i] = "Display " + (i + 1) + " (" +
+                String.Join(", ", details.ToArray()) + ")";
+        }
+
+        return names;
+#else
+        return new string[] { "Display 1" };
+#endif
+    }
+
+    /// <summary>
+    /// Chooses the first monitor that is not displaying Unity. In the usual
+    /// two-monitor arrangement this selects the second display.
+    /// </summary>
+    public static int GetDefaultCalibrationMonitorIndex()
+    {
+        return ResolveCalibrationMonitorIndex(-1);
+    }
+
+    private static int ResolveCalibrationMonitorIndex(int requestedIndex)
+    {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        System.Windows.Forms.Screen[] monitors =
+            System.Windows.Forms.Screen.AllScreens;
+        if (monitors.Length == 0) {
+            return 0;
+        }
+
+        if (requestedIndex >= 0 && requestedIndex < monitors.Length) {
+            return requestedIndex;
+        }
+
+        IntPtr unityWindow = GetActiveWindow();
+        System.Windows.Forms.Screen unityMonitor = unityWindow == IntPtr.Zero
+            ? null
+            : System.Windows.Forms.Screen.FromHandle(unityWindow);
+
+        if (unityMonitor != null) {
+            for (int i = 0; i < monitors.Length; i++) {
+                if (!String.Equals(
+                    monitors[i].DeviceName,
+                    unityMonitor.DeviceName,
+                    StringComparison.OrdinalIgnoreCase)) {
+                    return i;
+                }
+            }
+        }
+
+        return monitors.Length > 1 ? 1 : 0;
+#else
+        return 0;
+#endif
+    }
+
     /// <summary>A gaze sample expressed in both tracker and Unity coordinates.</summary>
     public struct GazeSample
     {
@@ -1161,9 +1257,18 @@ public static class EyeLink
                     "Unity does not have an active window for the EyeLink setup display.");
             }
 
+            int monitorIndex = CalibrationMonitorIndex;
             using (EyeLinkCalibrationWindow calibrationWindow =
-                new EyeLinkCalibrationWindow(unityWindow)) {
+                new EyeLinkCalibrationWindow(unityWindow, monitorIndex)) {
                 calibrationWindow.ShowForCalibration();
+
+                string[] monitorNames = GetCalibrationMonitorNames();
+                string monitorName = monitorIndex >= 0 &&
+                    monitorIndex < monitorNames.Length
+                    ? monitorNames[monitorIndex]
+                    : "Display " + (monitorIndex + 1);
+                ReportStatus(
+                    "[EyeLink] Setup window opened on " + monitorName + ".");
 
                 int width = calibrationWindow.ClientSize.Width;
                 int height = calibrationWindow.ClientSize.Height;

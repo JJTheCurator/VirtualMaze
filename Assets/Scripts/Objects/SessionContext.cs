@@ -54,6 +54,7 @@ public class SessionContext {
     public string EyeLinkRequiredCueGazeEventCount;
     public string EyeLinkDrawGazeCircle;
     public string EyeLinkRewardDuringCalibration;
+    public string EyeLinkCalibrationMonitor;
 
 
     //regex to extract information from string
@@ -298,6 +299,8 @@ public class SessionContext {
         EyeLinkDrawGazeCircle = eyeLinkSettings.drawGazeCircle.ToString();
         EyeLinkRewardDuringCalibration =
             eyeLinkSettings.rewardDuringCalibration.ToString();
+        EyeLinkCalibrationMonitor =
+            (eyeLinkSettings.calibrationMonitorIndex + 1).ToString();
     }
 
     private string GetValue(string line) {

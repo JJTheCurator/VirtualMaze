@@ -197,8 +197,8 @@ public static class EyeLink
         private readonly Action<int> onPointAccepted;
         private bool targetPending;
         private bool targetDrawn;
-        private short targetX;
-        private short targetY;
+        private float targetX;
+        private float targetY;
         private int acceptedPointCount;
 
         public TrackerTargetSequence(
@@ -342,13 +342,15 @@ public static class EyeLink
 
         private void UpdateCalibrationTarget()
         {
-            short currentX;
-            short currentY;
-            bool targetVisible;
-            eyelink.getTargetPositionAndState(
+            float currentX;
+            float currentY;
+            // COM exposes eyelink_target_check() as its floating-point
+            // counterpart, targetCheckf(). Like the documented C function,
+            // its return value is non-zero while the tracker wants the target
+            // displayed and zero while it wants the target erased.
+            bool targetVisible = eyelink.targetCheckf(
                 out currentX,
-                out currentY,
-                out targetVisible);
+                out currentY) != 0;
 
             bool targetMoved = targetPending &&
                 (currentX != targetX || currentY != targetY);
@@ -374,7 +376,9 @@ public static class EyeLink
             }
 
             if (!targetDrawn) {
-                calibrationGraphics.drawCalibrationTarget(currentX, currentY);
+                calibrationGraphics.drawCalibrationTarget(
+                    Convert.ToInt16(Math.Round(currentX)),
+                    Convert.ToInt16(Math.Round(currentY)));
                 targetDrawn = true;
             }
         }

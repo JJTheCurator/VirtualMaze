@@ -218,38 +218,55 @@ public static class EyeLink
         public void Run()
         {
             bool setupStarted = false;
+            string sdkCall = "getCalibrationResult";
             try {
                 // Reading the result clears any reply left by an earlier setup.
+                ReportStatus("[EyeLink] Clearing previous calibration result.");
                 eyelink.getCalibrationResult();
+                ReportStatus("[EyeLink] Requesting tracker setup mode.");
+                sdkCall = "startSetup";
                 eyelink.startSetup();
                 setupStarted = true;
 
-                if (eyelink.waitForModeReady(1000) != 0) {
-                    throw new InvalidOperationException(
-                        "EyeLink did not finish entering setup mode.");
-                }
-
+                ReportStatus("[EyeLink] Waiting for tracker setup mode to become ready.");
+                // Poll the mode while servicing Windows messages instead of
+                // blocking inside COM's waitForModeReady call.
+                sdkCall = "inSetup (waiting for setup screen)";
                 WaitForSetupScreen();
-                ReportStatus(
-                    "[EyeLink] Setup screen ready; waiting one second " +
-                    "before requesting " + operation + ".");
-                PumpFor(SetupKeyDelayMilliseconds);
+                if (setupKey != 0) {
+                    ReportStatus(
+                        "[EyeLink] Setup screen ready; waiting one second " +
+                        "before requesting " + operation + ".");
+                    PumpFor(SetupKeyDelayMilliseconds);
 
-                if (!eyelink.inSetup()) {
-                    throw new InvalidOperationException(
-                        "EyeLink left setup mode before the " + operation +
-                        " key could be sent.");
+                    if (!eyelink.inSetup()) {
+                        throw new InvalidOperationException(
+                            "EyeLink left setup mode before the " + operation +
+                            " key could be sent.");
+                    }
+
+                    sdkCall = "sendKeybutton (starting " + operation + ")";
+                    eyelink.sendKeybutton(setupKey, NoKeyModifiers, KeyPress);
+                    ReportStatus("[EyeLink] Requested " + operation + " mode.");
+                }
+                else {
+                    ReportStatus(
+                        "[EyeLink] Setup screen ready; waiting for the " +
+                        "tracker to start " + operation + ".");
                 }
 
-                eyelink.sendKeybutton(setupKey, NoKeyModifiers, KeyPress);
-                ReportStatus("[EyeLink] Requested " + operation + " mode.");
-
+                sdkCall = "waiting for target mode";
                 WaitForTargetMode();
+                sdkCall = "running target display";
                 short result = RunTargetModeDisplay();
                 if (result != 0) {
                     throw new InvalidOperationException(
                         "EyeLink " + operation + " returned result " + result + ".");
                 }
+            }
+            catch (Exception exception) {
+                exception.Data["EyeLinkSdkCall"] = sdkCall;
+                throw;
             }
             finally {
                 if (setupStarted) {
@@ -286,7 +303,7 @@ public static class EyeLink
                     throw new TimeoutException(
                         "EyeLink did not enter " + operation +
                         " target mode within " + SetupModeTimeoutMilliseconds +
-                        " ms after the key was sent.");
+                        " ms after setup became ready.");
                 }
             }
         }
@@ -413,7 +430,7 @@ public static class EyeLink
 
         private void PumpOnce()
         {
-            System.Windows.Forms.Application.DoEvents();
+            calibrationWindow.PumpEvents();
 
             int key;
             while (calibrationWindow.TryDequeueSetupKey(out key)) {
@@ -547,7 +564,7 @@ public static class EyeLink
     /// </summary>
     public static bool Calibration(Action<int> onPointAccepted)
     {
-        return RunTrackerSetupMode("calibration", 'c', false, onPointAccepted);
+        return RunTrackerSetupMode("calibration", 0, false, onPointAccepted);
     }
 
     /// <summary>
@@ -1263,17 +1280,21 @@ public static class EyeLink
             return true;
         }
 
+        string stage = "stopping recording";
         try {
             ReportStatus("[EyeLink] Starting " + operation + ".");
             StopRecording();
+            stage = "getting the Unity window";
             IntPtr unityWindow = GetActiveWindow();
             if (unityWindow == IntPtr.Zero) {
                 throw new InvalidOperationException(
                     "Unity does not have an active window for the EyeLink setup display.");
             }
 
+            stage = "creating the calibration window";
             using (EyeLinkCalibrationWindow calibrationWindow =
                 new EyeLinkCalibrationWindow(unityWindow)) {
+                stage = "showing the calibration window";
                 calibrationWindow.ShowForCalibration();
 
                 ReportStatus(
@@ -1285,20 +1306,28 @@ public static class EyeLink
                 int right = Math.Max(0, width - 1);
                 int bottom = Math.Max(0, height - 1);
 
+                stage = "switching the tracker offline";
                 eyelink.setOfflineMode();
                 // EyeLink coordinates are local to the selected monitor and
                 // its calibration window, not global virtual-desktop pixels.
+                stage = "sending the calibration screen coordinates";
                 eyelink.sendCommand(
                     "screen_pixel_coords = 0 0 " + right + " " + bottom);
+                stage = "sending the display coordinates message";
                 eyelink.sendMessage(
                     "DISPLAY_COORDS 0 0 " + right + " " + bottom);
+                stage = "waiting for tracker commands to settle";
                 eyelinkUtil.pumpDelay(50);
 
+                stage = "creating the GDI calibration interface";
                 SREYELINKLib.ELGDICal cal = eyelinkUtil.getGDICal();
+                stage = "assigning the calibration window handle";
                 cal.setCalibrationWindow(calibrationWindow.Handle.ToInt32());
+                stage = "enabling calibration key collection";
                 cal.enableKeyCollection(true);
 
                 try {
+                    stage = "starting the tracker operation";
                     trackerAction(
                         width,
                         height,
@@ -1316,7 +1345,8 @@ public static class EyeLink
         catch (Exception exception) {
             ReportError(
                 "[EyeLink] " + operation + " failed: " +
-                FormatException(exception));
+                FormatException(exception) + " (stage: " + stage + ").");
+            Debug.LogException(exception);
             return false;
         }
     }
@@ -1331,6 +1361,13 @@ public static class EyeLink
         if (String.IsNullOrWhiteSpace(message)) {
             message = exception.GetType().Name + " (HRESULT 0x" +
                 Marshal.GetHRForException(exception).ToString("X8") + ")";
+        }
+        else {
+            message = exception.GetType().Name + ": " + message;
+        }
+
+        if (exception.Data.Contains("EyeLinkSdkCall")) {
+            message += " (SDK call: " + exception.Data["EyeLinkSdkCall"] + ")";
         }
 
         if (exception.InnerException != null) {

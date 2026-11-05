@@ -20,6 +20,8 @@ internal sealed class EyeLinkCalibrationWindow : IDisposable
     internal IntPtr Handle { get; private set; }
     internal string TargetMonitorDeviceName { get; private set; }
     internal Rectangle TargetMonitorBounds { get; private set; }
+    internal string ActualMonitorDeviceName { get; private set; }
+    internal Rectangle ActualMonitorBounds { get; private set; }
     internal Size ClientSize {
         get {
             NativeRect client;
@@ -138,6 +140,18 @@ internal sealed class EyeLinkCalibrationWindow : IDisposable
         SetFocus(Handle);
         SetCursor(IntPtr.Zero);
         PumpEvents();
+
+        // Resolve the monitor from the visible window itself. Windows may
+        // move a window if the display layout changed after enumeration.
+        MonitorInfo actualMonitor = new MonitorInfo();
+        actualMonitor.size = (uint)Marshal.SizeOf(typeof(MonitorInfo));
+        IntPtr monitor = MonitorFromWindow(Handle, 0); // MONITOR_DEFAULTTONULL
+        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref actualMonitor)) {
+            throw new InvalidOperationException(
+                "Could not identify the display containing the EyeLink calibration window.");
+        }
+        ActualMonitorDeviceName = actualMonitor.deviceName;
+        ActualMonitorBounds = actualMonitor.monitor.ToRectangle();
     }
 
     internal void PumpEvents()

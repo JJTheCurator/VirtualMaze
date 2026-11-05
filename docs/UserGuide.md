@@ -1,9 +1,59 @@
 # User Guide
+* [EyeLink setup buttons](#eyelink-setup-buttons)
 * [Session Logs](#Session-Logs)
 * [Adding new maze scenes](#Adding-new-maze-scenes)
 * [Adding/Editing GUI](#Adding/Editing-GUI)
 * [Adding new posters](#Adding-new-posters)
 * [Modify scene lighting](#Modify-scene-lighting)
+
+## EyeLink setup buttons
+
+EyeLink setup uses Display 2 when available and stops any current recording.
+After the calibration window is shown, VirtualMaze identifies the monitor
+containing it and sends that window's measured pixel dimensions to EyeLink.
+Both `screen_pixel_coords` and EDF `DISPLAY_COORDS` use local coordinates
+`0 0 (width - 1) (height - 1)`. Unity's main-window dimensions are not sent.
+The log records the monitor, calibration area, and exact command.
+
+* Select one calibration mode: **H3** (three points in a horizontal line),
+  **HV3** (three points in a triangle), **HV5** (five points in a cross),
+  **HV9** (nine-point grid), or **HV13** (13 points). The choice is saved with
+  experiment settings; older settings default to HV9.
+* **Calibration** sets the Host to the selected calibration type after
+  configuring the display coordinates, opens tracker setup, waits
+  one second after it is ready, and sends the tracker's `c` key to start
+  calibration. It reapplies the selected type on each click, including after a
+  manual change on the Host; no manual matching of the Host type is required.
+  When the sequence finishes, the calibration window stays open for review.
+  Click **Accept** on the EyeLink Host to keep the values and return to Unity;
+  **Escape** cancels/discards. VirtualMaze does not automatically press Enter
+  or Escape after a completed calibration or validation.
+* **Validation** follows the same sequence and sends `v`.
+* **Drift Detection** displays one target at the center of Display 2 and checks
+  gaze against that position using the current calibration. Fixate the target
+  and press **Space** to accept it. A successful result is applied through the
+  EyeLink SDK. Whether the tracker checks drift or adjusts gaze depends on its
+  configuration.
+* **Camera Setup** opens the tracker camera/setup interface.
+
+When Calibration Reward is enabled, every accepted calibration point uses the
+same reward duration (in milliseconds) configured in the Hardware tab. That
+duration is saved in the Hardware reward settings.
+
+**Draw Gaze Circle** controls the gaze overlay only; **Calibration Reward**
+controls reward pulses only. The two toggles are independent.
+
+Calibration is held by the EyeLink Host, which supplies calibrated gaze pixel
+coordinates to Unity. Recording starts through the original SDK sequence;
+it does not query or check display dimensions before starting a trial. Gaze
+mapping uses the setup-window dimensions when available, with the original
+Unity-window fallback before a setup window has been measured.
+
+Drift Detection returns to Unity after one result. **Escape** cancels it, and
+an unanswered check times out after 60 seconds. It does not automatically open
+setup, start calibration, or repeat the check. If it fails, use Calibration or
+Camera Setup explicitly before trying again. Escape also cancels calibration
+or validation. Start recording again when ready to resume the experiment.
 
 ## Session Logs
 The session logs contains data describing setup of the session and the location of the robot in VirtualMaze.

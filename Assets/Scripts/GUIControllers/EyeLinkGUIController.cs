@@ -27,6 +27,9 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         [OptionalField(VersionAdded = 2)]
         public bool hasCalibrationMonitorIndex;
 
+        [OptionalField(VersionAdded = 3)]
+        public string calibrationType;
+
         public Settings(
             string localEdfPath,
             bool useFixedCueDuration,
@@ -37,7 +40,8 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             int requiredCueGazeEventCount,
             bool drawGazeCircle,
             bool rewardDuringCalibration,
-            int calibrationMonitorIndex)
+            int calibrationMonitorIndex,
+            string calibrationType = "HV9")
         {
             this.localEdfPath = localEdfPath;
             this.useFixedCueDuration = useFixedCueDuration;
@@ -50,10 +54,12 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             this.rewardDuringCalibration = rewardDuringCalibration;
             this.calibrationMonitorIndex = calibrationMonitorIndex;
             hasCalibrationMonitorIndex = true;
+            this.calibrationType = calibrationType;
         }
     }
 
     private static readonly Color ErrorColor = new Color(1f, 0.35f, 0.35f);
+    private static readonly string[] CalibrationTypes = { "H3", "HV3", "HV5", "HV9", "HV13" };
 
     [Header("Settings")]
     [SerializeField]
@@ -104,6 +110,13 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
 
     [SerializeField]
     private Toggle calibrationRewardToggle = null;
+
+    [Header("Calibration mode (H3, HV3, HV5, HV9, HV13)")]
+    [SerializeField]
+    private Toggle[] calibrationModeToggles = new Toggle[5];
+
+    [SerializeField]
+    private ToggleGroup calibrationModeGroup = null;
 
     [SerializeField]
     private RewardsController rewardsController = null;
@@ -156,16 +169,6 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
                 OnCueGazeEventCountToggled);
         }
 
-        if (calibrationRewardToggle != null) {
-            calibrationRewardToggle.onValueChanged.AddListener(
-                OnCalibrationRewardToggled);
-        }
-
-        if (drawGazeCircleToggle != null) {
-            drawGazeCircleToggle.onValueChanged.AddListener(
-                OnDrawGazeCircleToggled);
-        }
-
         AddButtonListener(calibrationButton, OnCalibrationClicked);
         AddButtonListener(driftDetectionButton, OnDriftDetectionClicked);
         AddButtonListener(validationButton, OnValidationClicked);
@@ -210,16 +213,6 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         if (cueGazeEventCountToggle != null) {
             cueGazeEventCountToggle.onValueChanged.RemoveListener(
                 OnCueGazeEventCountToggled);
-        }
-
-        if (calibrationRewardToggle != null) {
-            calibrationRewardToggle.onValueChanged.RemoveListener(
-                OnCalibrationRewardToggled);
-        }
-
-        if (drawGazeCircleToggle != null) {
-            drawGazeCircleToggle.onValueChanged.RemoveListener(
-                OnDrawGazeCircleToggled);
         }
 
         RemoveButtonListener(calibrationButton, OnCalibrationClicked);
@@ -380,7 +373,24 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         }
     }
 
-    private void OnCalibrationRewardToggled(bool value)
+    public void OnH3CalibrationModeToggled(bool value) { OnCalibrationModeToggled(0, value); }
+    public void OnHV3CalibrationModeToggled(bool value) { OnCalibrationModeToggled(1, value); }
+    public void OnHV5CalibrationModeToggled(bool value) { OnCalibrationModeToggled(2, value); }
+    public void OnHV9CalibrationModeToggled(bool value) { OnCalibrationModeToggled(3, value); }
+    public void OnHV13CalibrationModeToggled(bool value) { OnCalibrationModeToggled(4, value); }
+
+    private void OnCalibrationModeToggled(int index, bool value)
+    {
+        if (isRefreshingSettingsUi || !value) {
+            return;
+        }
+
+        EyeLink.TrySetCalibrationType(CalibrationTypes[index]);
+        RefreshCalibrationModeToggles();
+        WriteEyeLinkStatus("Calibration mode set to " + EyeLink.CalibrationType + ".");
+    }
+
+    public void OnCalibrationRewardToggled(bool value)
     {
         if (isRefreshingSettingsUi) {
             return;
@@ -410,7 +420,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             Debug.Log(
                 "[Calibration Reward] SIMULATED: point " + pointNumber +
                 " accepted; reward requested for " +
-                Math.Max(1, rewardsController.rewardDurationMilliSecs) +
+                rewardsController.CalibrationRewardDurationMilliseconds +
                 " ms. No COM port is configured, so no hardware output was sent.");
             WriteEyeLinkStatus(
                 "Calibration reward simulated for point " + pointNumber + ".");
@@ -468,7 +478,8 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
                 : levelController.RequiredCueGazeEventCount,
             liveGazeRaycaster != null && liveGazeRaycaster.ShowGazeArea,
             calibrationRewardsEnabled,
-            EyeLink.GetDefaultCalibrationMonitorIndex());
+            EyeLink.GetDefaultCalibrationMonitorIndex(),
+            EyeLink.CalibrationType);
     }
 
     protected override void ApplySettings(ComponentSettings loadedSettings)
@@ -481,6 +492,10 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
 
         ResolveReferences();
         calibrationRewardsEnabled = settings.rewardDuringCalibration;
+        if (!EyeLink.TrySetCalibrationType(settings.calibrationType ?? "HV9")) {
+            EyeLink.TrySetCalibrationType("HV9");
+            WriteEyeLinkError("The saved calibration mode is invalid; using HV9.");
+        }
 
         if (!String.IsNullOrEmpty(settings.localEdfPath)) {
             string unused;
@@ -511,6 +526,39 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
 
     private void ResolveReferences()
     {
+        if (calibrationModeToggles == null || calibrationModeToggles.Length != CalibrationTypes.Length) {
+            Array.Resize(ref calibrationModeToggles, CalibrationTypes.Length);
+        }
+        Toggle[] childToggles = GetComponentsInChildren<Toggle>(true);
+        if (drawGazeCircleToggle == null) {
+            foreach (Toggle toggle in childToggles) {
+                if (toggle.name == "DrawGazeCircleToggle") {
+                    drawGazeCircleToggle = toggle;
+                    break;
+                }
+            }
+        }
+        for (int index = 0; index < CalibrationTypes.Length; index++) {
+            if (calibrationModeToggles[index] == null) {
+                foreach (Toggle toggle in childToggles) {
+                    if (toggle.name == CalibrationTypes[index] + "CalibrationModeToggle") {
+                        calibrationModeToggles[index] = toggle;
+                        break;
+                    }
+                }
+            }
+            if (calibrationModeToggles[index] != null) {
+                if (calibrationModeGroup == null) {
+                    calibrationModeGroup = GetComponent<ToggleGroup>();
+                    if (calibrationModeGroup == null) {
+                        calibrationModeGroup = gameObject.AddComponent<ToggleGroup>();
+                    }
+                }
+                calibrationModeGroup.allowSwitchOff = false;
+                calibrationModeToggles[index].group = calibrationModeGroup;
+            }
+        }
+
         if (levelController == null) {
             levelController = FindObjectOfType<LevelController>();
         }
@@ -619,6 +667,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
                     levelController.UseCueGazeEventCount);
             }
 
+            RefreshCalibrationModeToggles();
             SetToggleValue(calibrationRewardToggle, calibrationRewardsEnabled);
             SetToggleValue(
                 drawGazeCircleToggle,
@@ -634,6 +683,29 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         if (monitorsListDropDown != null) {
             // Calibration always uses Display 2, so no selector is needed.
             monitorsListDropDown.gameObject.SetActive(false);
+        }
+    }
+
+    private void RefreshCalibrationModeToggles()
+    {
+        bool wasRefreshing = isRefreshingSettingsUi;
+        isRefreshingSettingsUi = true;
+        try {
+            int selectedIndex = Array.IndexOf(CalibrationTypes, EyeLink.CalibrationType);
+            if (selectedIndex < 0) {
+                selectedIndex = 3; // HV9 for older settings.
+            }
+            // Turn the selected toggle on first so the group always retains
+            // one selection, including while applying saved settings.
+            SetToggleValue(calibrationModeToggles[selectedIndex], true);
+            for (int index = 0; index < calibrationModeToggles.Length; index++) {
+                if (index != selectedIndex) {
+                    SetToggleValue(calibrationModeToggles[index], false);
+                }
+            }
+        }
+        finally {
+            isRefreshingSettingsUi = wasRefreshing;
         }
     }
 

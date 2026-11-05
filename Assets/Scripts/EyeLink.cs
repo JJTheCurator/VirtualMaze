@@ -28,6 +28,58 @@ using Eltype = SREYELINKLib.EL_DATA_TYPE;
 /// </summary>
 public static class EyeLink
 {
+    /// <summary>The calibration pattern selected in the EyeLink menu.</summary>
+    public static string CalibrationType { get; private set; } = "HV9";
+
+    /// <summary>The measured calibration surface sent to the current Host.</summary>
+    public static int CalibrationDisplayWidth { get; private set; }
+    public static int CalibrationDisplayHeight { get; private set; }
+    public static int CalibrationDisplayLeft { get; private set; }
+    public static int CalibrationDisplayTop { get; private set; }
+
+    private static int GazeDisplayWidth {
+        get { return CalibrationDisplayWidth > 1 ? CalibrationDisplayWidth : Screen.width; }
+    }
+    private static int GazeDisplayHeight {
+        get { return CalibrationDisplayHeight > 1 ? CalibrationDisplayHeight : Screen.height; }
+    }
+
+    /// <summary>Converts Host pixels to participant-display bottom-left pixels.</summary>
+    public static Vector2 TrackerToUnityPixels(float trackerX, float trackerY)
+    {
+        return new Vector2(trackerX - CalibrationDisplayLeft,
+            CalibrationDisplayTop + GazeDisplayHeight - 1 - trackerY);
+    }
+
+    /// <summary>Maps Host pixels to the subject camera's normalized viewport.</summary>
+    public static bool TryTrackerPixelsToViewport(Vector2 trackerPixels, out Vector2 viewport)
+    {
+        viewport = Vector2.zero;
+        int width = GazeDisplayWidth;
+        int height = GazeDisplayHeight;
+        if (width <= 1 || height <= 1) {
+            return false;
+        }
+        Vector2 pixels = TrackerToUnityPixels(trackerPixels.x, trackerPixels.y);
+        viewport = new Vector2(pixels.x / (width - 1),
+            pixels.y / (height - 1));
+        return viewport.x >= 0f && viewport.x <= 1f &&
+            viewport.y >= 0f && viewport.y <= 1f;
+    }
+
+    /// <summary>Changes the pattern used by the next calibration.</summary>
+    public static bool TrySetCalibrationType(string type)
+    {
+        string normalized = type == null ? String.Empty : type.Trim().ToUpperInvariant();
+        switch (normalized) {
+            case "H3": case "HV3": case "HV5": case "HV9": case "HV13":
+                CalibrationType = normalized;
+                return true;
+            default:
+                return false;
+        }
+    }
+
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
     [DllImport("user32.dll")]
     private static extern IntPtr GetActiveWindow();
@@ -175,17 +227,22 @@ public static class EyeLink
     private const short KeyPress = 10;
     private const short NoReply = 1000;
     private const short InTargetMode = 8;
+    private const short InDriftCorrectionMode = 16;
+    private const short HostCalibrationMode = 11;
+    private const short HostValidationMode = 12;
+    private const int TrackerCommandTimeoutMilliseconds = 1000;
     private const int SetupKeyDelayMilliseconds = 1000;
     private const int SetupModeTimeoutMilliseconds = 10000;
     private const int SetupExitTimeoutMilliseconds = 2000;
+    private const int DriftCorrectionTimeoutMilliseconds = 60000;
     private const int MaximumQueuedItemsPerPoll = 4096;
     // FEVENT.read flags from eye_data.h (not the EVENT_* block-content flags).
     private const ushort ReadBeginPosition = 0x0008;
     private const ushort ReadGazePosition = 0x1000;
 
     /// <summary>
-    /// Runs calibration or validation without entering doTrackerSetup's
-    /// blocking COM call. All tracker calls and window messages stay on the
+    /// Runs calibration, validation, or drift correction without a blocking
+    /// SDK setup loop. All tracker calls and window messages stay on the
     /// Unity thread, which avoids re-entering the EyeLink COM object.
     /// </summary>
     private sealed class TrackerTargetSequence
@@ -218,10 +275,24 @@ public static class EyeLink
         public void Run()
         {
             bool setupStarted = false;
+            bool hostFinished = false;
             string sdkCall = "getCalibrationResult";
             try {
+                if (setupKey == 'c') {
+                    // The display coordinates have now been set for the
+                    // calibration window. Reissue the type to regenerate
+                    // targets and override later changes on the Host.
+                    sdkCall = "sendTimedCommand (calibration_type)";
+                    eyelink.sendTimedCommand(TrackerCommandTimeoutMilliseconds,
+                        "calibration_type = " + CalibrationType);
+                    ReportStatus(
+                        "[EyeLink] Requested " + CalibrationType +
+                        " calibration on the Host.");
+                }
+
                 // Reading the result clears any reply left by an earlier setup.
                 ReportStatus("[EyeLink] Clearing previous calibration result.");
+                sdkCall = "getCalibrationResult";
                 eyelink.getCalibrationResult();
                 ReportStatus("[EyeLink] Requesting tracker setup mode.");
                 sdkCall = "startSetup";
@@ -259,9 +330,14 @@ public static class EyeLink
                 WaitForTargetMode();
                 sdkCall = "running target display";
                 short result = RunTargetModeDisplay();
+                hostFinished = true;
+                if (result == EscapeKey) {
+                    throw new OperationCanceledException(operation + " cancelled on the Host.");
+                }
                 if (result != 0) {
                     throw new InvalidOperationException(
-                        "EyeLink " + operation + " returned result " + result + ".");
+                        "EyeLink " + operation + " returned result " + result +
+                        GetCalibrationFailureDetails() + ".");
                 }
             }
             catch (Exception exception) {
@@ -269,8 +345,101 @@ public static class EyeLink
                 throw;
             }
             finally {
-                if (setupStarted) {
+                if (setupStarted && !hostFinished) {
                     ExitSetupMode();
+                }
+            }
+        }
+
+        public void RunDriftCorrection(short x, short y)
+        {
+            bool displayStarted = false;
+            bool driftStarted = false;
+            short result = NoReply;
+            string sdkCall = "getCalibrationResult";
+            try {
+                eyelink.getCalibrationResult();
+                sdkCall = "setupCalibrationDisplay";
+                calibrationGraphics.setupCalibrationDisplay();
+                displayStarted = true;
+                calibrationGraphics.drawCalibrationTarget(x, y);
+                targetDrawn = true;
+                calibrationGraphics.playCalibrationBeep(
+                    SREYELINKLib.CAL_BEEP_ID.DC_TARG_BEEP);
+
+                ReportStatus(
+                    "[EyeLink] Drift detection: fixate the center target and " +
+                    "press Space to accept; Escape cancels. " +
+                    "The check times out after 60 seconds.");
+                // Use the low-level operation so Escape cannot start the
+                // SDK's nested setup/calibration loop.
+                sdkCall = "startDriftCorrect";
+                driftStarted = true;
+                eyelink.startDriftCorrect(x, y);
+                sdkCall = "waiting for drift correction mode";
+                int startedAt = Environment.TickCount;
+                while ((eyelink.getCurrentMode() & InDriftCorrectionMode) == 0) {
+                    PumpOnce(true);
+                    if (HasTimedOut(startedAt, SetupModeTimeoutMilliseconds)) {
+                        throw new TimeoutException(
+                            "EyeLink did not enter drift correction mode within " +
+                            SetupModeTimeoutMilliseconds + " ms.");
+                    }
+                }
+
+                sdkCall = "getCalibrationResult (drift detection)";
+                startedAt = Environment.TickCount;
+                while (result == NoReply) {
+                    PumpOnce(true);
+                    result = eyelink.getCalibrationResult();
+                    if (result == NoReply &&
+                        HasTimedOut(startedAt, DriftCorrectionTimeoutMilliseconds)) {
+                        throw new TimeoutException(
+                            "EyeLink drift detection timed out after " +
+                            DriftCorrectionTimeoutMilliseconds + " ms.");
+                    }
+                }
+
+                if (result == EscapeKey) {
+                    throw new OperationCanceledException("Drift detection cancelled.");
+                }
+                if (result != 0) {
+                    throw new InvalidOperationException(
+                        "EyeLink drift detection returned result " + result +
+                        ". Use Calibration or Camera Setup before trying again.");
+                }
+
+                sdkCall = "applyDriftCorrect";
+                eyelink.applyDriftCorrect();
+            }
+            catch (Exception exception) {
+                exception.Data["EyeLinkSdkCall"] = sdkCall;
+                throw;
+            }
+            finally {
+                try {
+                    if (driftStarted) {
+                        // Always leave the tracker idle; do not retry drift or
+                        // open camera setup from this button.
+                        eyelink.setOfflineMode();
+                    }
+                }
+                finally {
+                    if (displayStarted) {
+                        try {
+                            if (targetDrawn) {
+                                calibrationGraphics.eraseCalibrationTarget();
+                                targetDrawn = false;
+                            }
+                            calibrationGraphics.clearCalibrationDisplay();
+                            if (result != NoReply) {
+                                calibrationGraphics.playDoneBeep(result);
+                            }
+                        }
+                        finally {
+                            calibrationGraphics.exitCalibrationDisplay();
+                        }
+                    }
                 }
             }
         }
@@ -286,6 +455,25 @@ public static class EyeLink
                         SetupModeTimeoutMilliseconds + " ms.");
                 }
             }
+        }
+
+        private short WaitForHostAcceptance(short result)
+        {
+            // Keep the native display alive while the operator reviews the
+            // result. Only the Host/operator may accept it; never send Enter
+            // or the successful-path Escape that could discard calibration.
+            short completedMode = setupKey == 'c' ? HostCalibrationMode : HostValidationMode;
+            ReportStatus("[EyeLink] " + operation +
+                " sequence finished. Review the result and click Accept on " +
+                "the EyeLink Host; Escape cancels.");
+            while (eyelink.inSetup() && eyelink.getTrackerMode() == completedMode) {
+                PumpOnce();
+                short reply = eyelink.getCalibrationResult();
+                if (reply != NoReply) {
+                    result = reply;
+                }
+            }
+            return result;
         }
 
         private void WaitForTargetMode()
@@ -326,8 +514,23 @@ public static class EyeLink
                     UpdateCalibrationTarget();
                 }
 
+                if (result == 0 && targetPending) {
+                    NotifyPointAccepted();
+                    targetPending = false;
+                }
+                if (result != EscapeKey) {
+                    result = WaitForHostAcceptance(result);
+                }
+
                 if (result == NoReply) {
-                    result = eyelink.getCalibrationResult();
+                    // The final reply can arrive just after the target-mode
+                    // flag clears. Allow a bounded interval for that packet.
+                    int startedAt = Environment.TickCount;
+                    do {
+                        PumpOnce();
+                        result = eyelink.getCalibrationResult();
+                    } while (result == NoReply &&
+                        !HasTimedOut(startedAt, SetupExitTimeoutMilliseconds));
                 }
 
                 if (result == 0 && targetPending) {
@@ -428,20 +631,27 @@ public static class EyeLink
             }
         }
 
-        private void PumpOnce()
+        private void PumpOnce(bool driftOnly = false, bool allowCancel = true)
         {
             calibrationWindow.PumpEvents();
 
             int key;
             while (calibrationWindow.TryDequeueSetupKey(out key)) {
+                if (key == EscapeKey && allowCancel) {
+                    throw new OperationCanceledException(operation + " cancelled.");
+                }
                 if (key == ' ') {
                     eyelink.acceptTrigger();
                 }
-                else {
+                else if (!driftOnly) {
                     eyelink.sendKeybutton(key, NoKeyModifiers, KeyPress);
                 }
             }
 
+            if (!eyelink.isConnected()) {
+                throw new InvalidOperationException(
+                    "EyeLink disconnected during " + operation + ".");
+            }
             System.Threading.Thread.Sleep(5);
         }
 
@@ -456,7 +666,9 @@ public static class EyeLink
                 int startedAt = Environment.TickCount;
                 while (eyelink.inSetup() &&
                     !HasTimedOut(startedAt, SetupExitTimeoutMilliseconds)) {
-                    PumpOnce();
+                    // During cleanup, forward further Escape presses instead
+                    // of interrupting the exit/abort fallback.
+                    PumpOnce(false, false);
                 }
 
                 if (eyelink.inSetup()) {
@@ -564,11 +776,12 @@ public static class EyeLink
     /// </summary>
     public static bool Calibration(Action<int> onPointAccepted)
     {
-        return RunTrackerSetupMode("calibration", 0, false, onPointAccepted);
+        return RunTrackerSetupMode("calibration", 'c', false, onPointAccepted);
     }
 
     /// <summary>
-    /// Runs drift detection/correction at the center of the Display 2 window.
+    /// Runs one drift detection/correction at the center of Display 2.
+    /// Escape cancels and returns to Unity without opening tracker setup.
     /// </summary>
     /// <returns><c>true</c> when drift correction completes successfully.</returns>
     public static bool DriftDetection()
@@ -576,13 +789,13 @@ public static class EyeLink
         return RunCalibrationWindow("drift detection", delegate(
             int width,
             int height,
-            EyeLinkCalibrationWindow unusedWindow,
-            SREYELINKLib.ELGDICal unusedGraphics) {
-            eyelink.doDriftCorrect(
+            EyeLinkCalibrationWindow calibrationWindow,
+            SREYELINKLib.ELGDICal calibrationGraphics) {
+            TrackerTargetSequence sequence = new TrackerTargetSequence(
+                "drift detection", 0, calibrationWindow, calibrationGraphics, null);
+            sequence.RunDriftCorrection(
                 (short)(width / 2),
-                (short)(height / 2),
-                true,
-                true);
+                (short)(height / 2));
         });
     }
 
@@ -672,8 +885,9 @@ public static class EyeLink
             remoteEdfName = NormalizeEdfBaseName(edfBaseName) + ".edf";
             eyelink.openDataFile(remoteEdfName);
             dataFileOpen = true;
-            eyelink.sendMessage("DISPLAY_COORDS 0 0 " +
-                Math.Max(0, Screen.width - 1) + " " + Math.Max(0, Screen.height - 1));
+            if (CalibrationDisplayWidth > 0 && CalibrationDisplayHeight > 0) {
+                SendCalibrationDisplayCoordinatesMessage();
+            }
             ReportStatus("[EyeLink] Opened Host EDF " + remoteEdfName + ".");
             return true;
         }
@@ -852,7 +1066,7 @@ public static class EyeLink
             LatestGazeSample = new GazeSample {
                 trackerTime = sample.time,
                 trackerPixels = new Vector2(trackerX, trackerY),
-                unityPixels = new Vector2(trackerX, (Screen.height - 1) - trackerY),
+                unityPixels = TrackerToUnityPixels(trackerX, trackerY),
                 pupilArea = pupilArea,
                 isValid = isValid,
                 eltype = sample.eltype
@@ -969,14 +1183,14 @@ public static class EyeLink
         Vector3 center = objectRenderer.bounds.center;
         Vector3 extent = objectRenderer.bounds.extents;
         Vector2[] screenPoints = {
-            mainCamera.WorldToScreenPoint(new Vector3(center.x - extent.x, center.y - extent.y, center.z + extent.z)),
-            mainCamera.WorldToScreenPoint(new Vector3(center.x + extent.x, center.y - extent.y, center.z + extent.z)),
-            mainCamera.WorldToScreenPoint(new Vector3(center.x - extent.x, center.y - extent.y, center.z - extent.z)),
-            mainCamera.WorldToScreenPoint(new Vector3(center.x + extent.x, center.y - extent.y, center.z - extent.z)),
-            mainCamera.WorldToScreenPoint(new Vector3(center.x - extent.x, center.y + extent.y, center.z + extent.z)),
-            mainCamera.WorldToScreenPoint(new Vector3(center.x + extent.x, center.y + extent.y, center.z + extent.z)),
-            mainCamera.WorldToScreenPoint(new Vector3(center.x - extent.x, center.y + extent.y, center.z - extent.z)),
-            mainCamera.WorldToScreenPoint(new Vector3(center.x + extent.x, center.y + extent.y, center.z - extent.z))
+            mainCamera.WorldToViewportPoint(new Vector3(center.x - extent.x, center.y - extent.y, center.z + extent.z)),
+            mainCamera.WorldToViewportPoint(new Vector3(center.x + extent.x, center.y - extent.y, center.z + extent.z)),
+            mainCamera.WorldToViewportPoint(new Vector3(center.x - extent.x, center.y - extent.y, center.z - extent.z)),
+            mainCamera.WorldToViewportPoint(new Vector3(center.x + extent.x, center.y - extent.y, center.z - extent.z)),
+            mainCamera.WorldToViewportPoint(new Vector3(center.x - extent.x, center.y + extent.y, center.z + extent.z)),
+            mainCamera.WorldToViewportPoint(new Vector3(center.x + extent.x, center.y + extent.y, center.z + extent.z)),
+            mainCamera.WorldToViewportPoint(new Vector3(center.x - extent.x, center.y + extent.y, center.z - extent.z)),
+            mainCamera.WorldToViewportPoint(new Vector3(center.x + extent.x, center.y + extent.y, center.z - extent.z))
         };
 
         Vector2 minimum = screenPoints[0];
@@ -987,10 +1201,10 @@ public static class EyeLink
             maximum = Vector2.Max(maximum, screenPoint);
         }
 
-        float left = minimum.x;
-        float top = Screen.height - maximum.y;
-        float right = maximum.x;
-        float bottom = Screen.height - minimum.y;
+        float left = CalibrationDisplayLeft + minimum.x * (GazeDisplayWidth - 1);
+        float top = CalibrationDisplayTop + (1f - maximum.y) * (GazeDisplayHeight - 1);
+        float right = CalibrationDisplayLeft + maximum.x * (GazeDisplayWidth - 1);
+        float bottom = CalibrationDisplayTop + (1f - minimum.y) * (GazeDisplayHeight - 1);
         return new Rect(
             Mathf.Round(left),
             Mathf.Round(top),
@@ -1098,6 +1312,10 @@ public static class EyeLink
             activeEye = Eye.EL_EYE_NONE;
             IsInitialized = false;
             IsRecording = false;
+            CalibrationDisplayWidth = 0;
+            CalibrationDisplayHeight = 0;
+            CalibrationDisplayLeft = 0;
+            CalibrationDisplayTop = 0;
             ResetLiveDataForRecording();
             dataFileOpen = false;
             shuttingDown = false;
@@ -1105,12 +1323,11 @@ public static class EyeLink
     }
 
     private static void ConfigureTracker() {
-        int right = Math.Max(0, Screen.width - 1);
-        int bottom = Math.Max(0, Screen.height - 1);
-
         eyelink.setOfflineMode();
-        eyelink.sendCommand("screen_pixel_coords = 0 0 " + right + " " + bottom);
-        eyelink.sendCommand("calibration_type = HV9");
+        // The participant display is measured when its calibration window is
+        // visible. Screen.width/height here describe Unity's operator window.
+        // Keep the Host's accepted calibration intact on reconnect. Apply the
+        // menu's requested type only when a new calibration is started.
         eyelink.sendCommand(
             "file_event_filter = LEFT,RIGHT,FIXATION,SACCADE,BLINK");
         eyelink.sendCommand(
@@ -1206,7 +1423,7 @@ public static class EyeLink
             eye = fixation.eye,
             readFlags = readFlags,
             trackerPixels = new Vector2(trackerX, trackerY),
-            unityPixels = new Vector2(trackerX, (Screen.height - 1) - trackerY),
+            unityPixels = TrackerToUnityPixels(trackerX, trackerY),
             isValid = isValid
         });
 
@@ -1297,25 +1514,18 @@ public static class EyeLink
                 stage = "showing the calibration window";
                 calibrationWindow.ShowForCalibration();
 
-                ReportStatus(
-                    "[EyeLink] Setup window opened on " +
-                    calibrationWindow.TargetMonitorDeviceName + ".");
-
-                int width = calibrationWindow.ClientSize.Width;
-                int height = calibrationWindow.ClientSize.Height;
-                int right = Math.Max(0, width - 1);
-                int bottom = Math.Max(0, height - 1);
+                System.Drawing.Size displaySize = calibrationWindow.ClientSize;
+                int width = displaySize.Width;
+                int height = displaySize.Height;
 
                 stage = "switching the tracker offline";
                 eyelink.setOfflineMode();
                 // EyeLink coordinates are local to the selected monitor and
                 // its calibration window, not global virtual-desktop pixels.
                 stage = "sending the calibration screen coordinates";
-                eyelink.sendCommand(
-                    "screen_pixel_coords = 0 0 " + right + " " + bottom);
+                ConfigureCalibrationDisplay(calibrationWindow, width, height);
                 stage = "sending the display coordinates message";
-                eyelink.sendMessage(
-                    "DISPLAY_COORDS 0 0 " + right + " " + bottom);
+                SendCalibrationDisplayCoordinatesMessage();
                 stage = "waiting for tracker commands to settle";
                 eyelinkUtil.pumpDelay(50);
 
@@ -1342,6 +1552,10 @@ public static class EyeLink
             ReportStatus("[EyeLink] " + operation + " finished.");
             return true;
         }
+        catch (OperationCanceledException) {
+            ReportStatus("[EyeLink] " + operation + " cancelled; returning to Unity.");
+            return false;
+        }
         catch (Exception exception) {
             ReportError(
                 "[EyeLink] " + operation + " failed: " +
@@ -1349,6 +1563,53 @@ public static class EyeLink
             Debug.LogException(exception);
             return false;
         }
+    }
+
+    private static void ConfigureCalibrationDisplay(
+        EyeLinkCalibrationWindow window, int width, int height)
+    {
+        if (width <= 0 || height <= 0) {
+            throw new InvalidOperationException(
+                "The visible EyeLink calibration window has an invalid size: " +
+                width + "x" + height + ".");
+        }
+
+        string command = "screen_pixel_coords = 0 0 " + (width - 1) + " " + (height - 1);
+        ReportStatus(
+            "[EyeLink] Calibration window on " + window.ActualMonitorDeviceName +
+            ": " + width + "x" + height + " pixels; monitor " +
+            window.ActualMonitorBounds.Width + "x" + window.ActualMonitorBounds.Height +
+            " at (" + window.ActualMonitorBounds.X + ", " + window.ActualMonitorBounds.Y +
+            "). Sending " + command + ".");
+        eyelink.sendTimedCommand(TrackerCommandTimeoutMilliseconds, command);
+        CalibrationDisplayWidth = width;
+        CalibrationDisplayHeight = height;
+        CalibrationDisplayLeft = 0;
+        CalibrationDisplayTop = 0;
+    }
+
+    private static void SendCalibrationDisplayCoordinatesMessage()
+    {
+        eyelink.sendMessage("DISPLAY_COORDS " + CalibrationDisplayLeft + " " +
+            CalibrationDisplayTop + " " + (CalibrationDisplayLeft + CalibrationDisplayWidth - 1) +
+            " " + (CalibrationDisplayTop + CalibrationDisplayHeight - 1));
+    }
+
+    private static string GetCalibrationFailureDetails()
+    {
+        string details = CalibrationDisplayWidth > 0 && CalibrationDisplayHeight > 0
+            ? " (display " + CalibrationDisplayWidth + "x" + CalibrationDisplayHeight + ")"
+            : String.Empty;
+        try {
+            string hostMessage = eyelink.getCalibrationMessage();
+            if (!String.IsNullOrWhiteSpace(hostMessage)) {
+                details += " Host: " + hostMessage.Trim();
+            }
+        }
+        catch (Exception) {
+            // Keep the original result if the Host has no diagnostic reply.
+        }
+        return details;
     }
 
     private static string FormatException(Exception exception)

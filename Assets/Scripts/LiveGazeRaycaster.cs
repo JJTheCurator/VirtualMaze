@@ -132,7 +132,7 @@ public sealed class LiveGazeRaycaster : MonoBehaviour
         }
 
         if ((!hasNewSample && (!keepLastValidSample || !EyeLink.HasGazeSample)) ||
-            !sample.isValid || Screen.width <= 0 || Screen.height <= 0)
+            !sample.isValid)
         {
             viewportGaze = Vector2.zero;
             return false;
@@ -140,12 +140,7 @@ public sealed class LiveGazeRaycaster : MonoBehaviour
 
         // EyeLink pixels describe the complete subject display. Normalizing
         // first keeps the ray correct when gazeCamera is only a mini viewport.
-        viewportGaze = new Vector2(
-            sample.unityPixels.x / Screen.width,
-            sample.unityPixels.y / Screen.height);
-
-        return viewportGaze.x >= 0f && viewportGaze.x <= 1f &&
-            viewportGaze.y >= 0f && viewportGaze.y <= 1f;
+        return EyeLink.TryTrackerPixelsToViewport(sample.trackerPixels, out viewportGaze);
     }
 
     private void ClearCurrentGaze()

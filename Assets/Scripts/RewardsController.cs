@@ -43,6 +43,7 @@ public class RewardsController : ConfigurableComponent {
     }
 
     public string portNum;
+    [Tooltip("Reward valve duration in milliseconds, shared by Hardware and EyeLink calibration rewards.")]
     public int rewardDurationMilliSecs;
     public bool enableRewardAreaError;
     public bool enableNonTargetRaycast;
@@ -55,6 +56,11 @@ public class RewardsController : ConfigurableComponent {
     private Timer calibrationRewardTimer;
 
     public bool IsPortOpen { get; private set; }
+
+    /// <summary>Uses the same serialized duration edited in the Hardware tab.</summary>
+    public int CalibrationRewardDurationMilliseconds {
+        get { return Math.Max(1, rewardDurationMilliSecs); }
+    }
 
     public bool RewardValveOn() {
         lock (rewardSerialLock) {
@@ -124,7 +130,7 @@ public class RewardsController : ConfigurableComponent {
             }
 
             calibrationRewardTimer.Change(
-                Math.Max(1, rewardDurationMilliSecs),
+                CalibrationRewardDurationMilliseconds,
                 Timeout.Infinite);
             return true;
         }

@@ -31,6 +31,65 @@ public static class EyeLink
     /// <summary>The calibration pattern selected in the EyeLink menu.</summary>
     public static string CalibrationType { get; private set; } = "HV9";
 
+    private static int calibrationTargetDiameter;
+    private static int calibrationHoleDiameter;
+
+    /// <summary>Outer calibration target diameter in participant-display pixels.</summary>
+    public static int CalibrationTargetDiameter {
+        get {
+            return calibrationTargetDiameter > 0 ? calibrationTargetDiameter :
+                Math.Max(3, GetCalibrationDisplayWidthForDefaults() / 60);
+        }
+    }
+
+    /// <summary>Central hole diameter in pixels, always smaller than the target.</summary>
+    public static int CalibrationHoleDiameter {
+        get {
+            int diameter = calibrationHoleDiameter > 0 ? calibrationHoleDiameter :
+                Math.Max(2, GetCalibrationDisplayWidthForDefaults() / 300);
+            return Math.Min(diameter, CalibrationTargetDiameter - 1);
+        }
+    }
+
+    /// <summary>Calibration target and background colors for the next setup operation.</summary>
+    public static Color CalibrationTargetColor { get; private set; } = Color.black;
+    public static Color CalibrationBackgroundColor { get; private set; } = Color.white;
+
+    /// <summary>
+    /// C# equivalent of set_target_size(). Values are integer pixel diameters;
+    /// keep the focal hole at least two pixels wide, as in the SDK example.
+    /// Applied to the GDI interface before calibration, validation, or drift correction.
+    /// </summary>
+    public static void SetCalibrationTargetSize(int diameter, int holeDiameter)
+    {
+        calibrationTargetDiameter = Math.Max(3, Math.Min(short.MaxValue, diameter));
+        calibrationHoleDiameter = Math.Max(2,
+            Math.Min(calibrationTargetDiameter - 1, holeDiameter));
+    }
+
+    /// <summary>Returns the SDK example's width/60 and width/300 defaults.</summary>
+    public static void GetDefaultCalibrationTargetSize(out int diameter, out int holeDiameter)
+    {
+        int width = GetCalibrationDisplayWidthForDefaults();
+        diameter = Math.Max(3, Math.Min(short.MaxValue, width / 60));
+        holeDiameter = Math.Max(2, Math.Min(diameter - 1, width / 300));
+    }
+
+    /// <summary>C# equivalent of set_calibration_colors(foreground, background).</summary>
+    public static void SetCalibrationColors(Color foreground, Color background)
+    {
+        CalibrationTargetColor = foreground;
+        CalibrationBackgroundColor = background;
+    }
+
+    private static int GetCalibrationDisplayWidthForDefaults()
+    {
+        int monitorIndex = GetDefaultCalibrationMonitorIndex();
+        int width = Display.displays.Length > monitorIndex
+            ? Display.displays[monitorIndex].systemWidth : 0;
+        return width > 0 ? width : Screen.width;
+    }
+
     /// <summary>The measured calibration surface sent to the current Host.</summary>
     public static int CalibrationDisplayWidth { get; private set; }
     public static int CalibrationDisplayHeight { get; private set; }
@@ -1533,6 +1592,13 @@ public static class EyeLink
                 SREYELINKLib.ELGDICal cal = eyelinkUtil.getGDICal();
                 stage = "assigning the calibration window handle";
                 cal.setCalibrationWindow(calibrationWindow.Handle.ToInt32());
+                stage = "setting the calibration target size";
+                // COM equivalents of set_target_size() and set_calibration_colors().
+                cal.setCalibrationTargetSize((short)CalibrationTargetDiameter,
+                    (short)CalibrationHoleDiameter);
+                stage = "setting the calibration colors";
+                cal.setCalibrationColors(ToColorRef(CalibrationTargetColor),
+                    ToColorRef(CalibrationBackgroundColor));
                 stage = "enabling calibration key collection";
                 cal.enableKeyCollection(true);
 
@@ -1563,6 +1629,13 @@ public static class EyeLink
             Debug.LogException(exception);
             return false;
         }
+    }
+
+    private static uint ToColorRef(Color color)
+    {
+        // Windows RGB()/COLORREF is 0x00BBGGRR, not ARGB. Alpha is unused.
+        Color32 rgb = color;
+        return (uint)(rgb.r | (rgb.g << 8) | (rgb.b << 16));
     }
 
     private static void ConfigureCalibrationDisplay(

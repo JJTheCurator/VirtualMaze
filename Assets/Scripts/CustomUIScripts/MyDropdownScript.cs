@@ -27,7 +27,9 @@ public class MyDropdownScript : Dropdown {
     }
 
     public void UpdateInputField(int selected) {
-        if (selected <= 0 || selected >= options.Count) {
+        // Index zero can be a real option (for example, White). Settings lists
+        // add their own empty option in UpdateOptions(), whose text is already blank.
+        if (selected < 0 || selected >= options.Count) {
             inputField.text = "";
             return;
         }

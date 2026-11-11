@@ -30,6 +30,15 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         [OptionalField(VersionAdded = 3)]
         public string calibrationType;
 
+        [OptionalField(VersionAdded = 4)]
+        public int calibrationTargetDiameter;
+
+        [OptionalField(VersionAdded = 4)]
+        public int calibrationHoleDiameter;
+
+        [OptionalField(VersionAdded = 4)]
+        public string calibrationBackgroundColor;
+
         public Settings(
             string localEdfPath,
             bool useFixedCueDuration,
@@ -41,7 +50,10 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             bool drawGazeCircle,
             bool rewardDuringCalibration,
             int calibrationMonitorIndex,
-            string calibrationType = "HV9")
+            string calibrationType = "HV9",
+            int calibrationTargetDiameter = 0,
+            int calibrationHoleDiameter = 0,
+            string calibrationBackgroundColor = "White")
         {
             this.localEdfPath = localEdfPath;
             this.useFixedCueDuration = useFixedCueDuration;
@@ -55,11 +67,21 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             this.calibrationMonitorIndex = calibrationMonitorIndex;
             hasCalibrationMonitorIndex = true;
             this.calibrationType = calibrationType;
+            this.calibrationTargetDiameter = calibrationTargetDiameter;
+            this.calibrationHoleDiameter = calibrationHoleDiameter;
+            this.calibrationBackgroundColor = calibrationBackgroundColor;
         }
     }
 
     private static readonly Color ErrorColor = new Color(1f, 0.35f, 0.35f);
     private static readonly string[] CalibrationTypes = { "H3", "HV3", "HV5", "HV9", "HV13" };
+    private static readonly string[] CalibrationColorNames = {
+        "White", "Gray", "Black", "Red", "Green", "Blue", "Yellow", "Cyan", "Magenta"
+    };
+    private static readonly Color[] CalibrationColors = {
+        Color.white, Color.gray, Color.black, Color.red, Color.green,
+        Color.blue, Color.yellow, Color.cyan, Color.magenta
+    };
 
     [Header("Settings")]
     [SerializeField]
@@ -92,6 +114,16 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
     [SerializeField]
     private Dropdown monitorsListDropDown = null;
 
+    [Header("Calibration appearance (pixel diameters and background color)")]
+    [SerializeField]
+    private Slider diameterSlider = null;
+
+    [SerializeField]
+    private Slider holeSizeSlider = null;
+
+    [SerializeField]
+    private Dropdown calibrationColorListDown = null;
+
     [Header("Tracker actions")]
     [SerializeField]
     private Button calibrationButton = null;
@@ -121,12 +153,14 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
     [SerializeField]
     private RewardsController rewardsController = null;
 
+    private int calibrationColorIndex;
     private bool calibrationRewardsEnabled;
     private bool isRefreshingSettingsUi;
 
     protected override void Awake()
     {
         ResolveReferences();
+        PopulateCalibrationColors();
         HideMonitorSelector();
 
         // Apply defaults and register with the settings manager before wiring
@@ -167,6 +201,16 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         if (cueGazeEventCountToggle != null) {
             cueGazeEventCountToggle.onValueChanged.AddListener(
                 OnCueGazeEventCountToggled);
+        }
+
+        if (diameterSlider != null) {
+            diameterSlider.onValueChanged.AddListener(OnCalibrationDiameterChanged);
+        }
+        if (holeSizeSlider != null) {
+            holeSizeSlider.onValueChanged.AddListener(OnCalibrationHoleSizeChanged);
+        }
+        if (calibrationColorListDown != null) {
+            calibrationColorListDown.onValueChanged.AddListener(OnCalibrationColorChanged);
         }
 
         AddButtonListener(calibrationButton, OnCalibrationClicked);
@@ -213,6 +257,16 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         if (cueGazeEventCountToggle != null) {
             cueGazeEventCountToggle.onValueChanged.RemoveListener(
                 OnCueGazeEventCountToggled);
+        }
+
+        if (diameterSlider != null) {
+            diameterSlider.onValueChanged.RemoveListener(OnCalibrationDiameterChanged);
+        }
+        if (holeSizeSlider != null) {
+            holeSizeSlider.onValueChanged.RemoveListener(OnCalibrationHoleSizeChanged);
+        }
+        if (calibrationColorListDown != null) {
+            calibrationColorListDown.onValueChanged.RemoveListener(OnCalibrationColorChanged);
         }
 
         RemoveButtonListener(calibrationButton, OnCalibrationClicked);
@@ -335,6 +389,42 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         SetInputFieldInteractable(requiredCueGazeEventCountField, value);
     }
 
+    public void OnCalibrationDiameterChanged(float value)
+    {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+        EyeLink.SetCalibrationTargetSize(Mathf.RoundToInt(value), EyeLink.CalibrationHoleDiameter);
+        RefreshCalibrationAppearanceUi();
+    }
+
+    public void OnCalibrationHoleSizeChanged(float value)
+    {
+        if (isRefreshingSettingsUi) {
+            return;
+        }
+        EyeLink.SetCalibrationTargetSize(EyeLink.CalibrationTargetDiameter, Mathf.RoundToInt(value));
+        RefreshCalibrationAppearanceUi();
+    }
+
+    public void OnCalibrationColorChanged(int index)
+    {
+        if (isRefreshingSettingsUi || index < 0 || index >= CalibrationColors.Length) {
+            return;
+        }
+        ApplyCalibrationColor(index);
+    }
+
+    private void ApplyCalibrationColor(int index)
+    {
+        calibrationColorIndex = index;
+        Color background = CalibrationColors[index];
+        // Keep the target visible on both light and dark background presets.
+        float brightness = 0.299f * background.r + 0.587f * background.g + 0.114f * background.b;
+        Color foreground = brightness >= 0.5f ? Color.black : Color.white;
+        EyeLink.SetCalibrationColors(foreground, background);
+    }
+
     public void OnCalibrationClicked()
     {
         Action<int> rewardCallback = calibrationRewardsEnabled
@@ -445,6 +535,9 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
 
     public override ComponentSettings GetDefaultSettings()
     {
+        int diameter;
+        int holeDiameter;
+        EyeLink.GetDefaultCalibrationTargetSize(out diameter, out holeDiameter);
         return new Settings(
             String.Empty,
             true,
@@ -455,7 +548,11 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             1,
             false,
             false,
-            EyeLink.GetDefaultCalibrationMonitorIndex());
+            EyeLink.GetDefaultCalibrationMonitorIndex(),
+            "HV9",
+            diameter,
+            holeDiameter,
+            "White");
     }
 
     public override ComponentSettings GetCurrentSettings()
@@ -479,7 +576,10 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             liveGazeRaycaster != null && liveGazeRaycaster.ShowGazeArea,
             calibrationRewardsEnabled,
             EyeLink.GetDefaultCalibrationMonitorIndex(),
-            EyeLink.CalibrationType);
+            EyeLink.CalibrationType,
+            EyeLink.CalibrationTargetDiameter,
+            EyeLink.CalibrationHoleDiameter,
+            CalibrationColorNames[calibrationColorIndex]);
     }
 
     protected override void ApplySettings(ComponentSettings loadedSettings)
@@ -492,6 +592,16 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
 
         ResolveReferences();
         calibrationRewardsEnabled = settings.rewardDuringCalibration;
+        int defaultDiameter;
+        int defaultHoleDiameter;
+        EyeLink.GetDefaultCalibrationTargetSize(out defaultDiameter, out defaultHoleDiameter);
+        EyeLink.SetCalibrationTargetSize(
+            settings.calibrationTargetDiameter > 0 ? settings.calibrationTargetDiameter : defaultDiameter,
+            settings.calibrationHoleDiameter > 0 ? settings.calibrationHoleDiameter : defaultHoleDiameter);
+        int colorIndex = Array.FindIndex(CalibrationColorNames, name => String.Equals(
+            name, settings.calibrationBackgroundColor, StringComparison.OrdinalIgnoreCase));
+        ApplyCalibrationColor(colorIndex >= 0 ? colorIndex : 0);
+
         if (!EyeLink.TrySetCalibrationType(settings.calibrationType ?? "HV9")) {
             EyeLink.TrySetCalibrationType("HV9");
             WriteEyeLinkError("The saved calibration mode is invalid; using HV9.");
@@ -526,6 +636,26 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
 
     private void ResolveReferences()
     {
+        // Resolve by name as well as Inspector references, including inactive panels.
+        Slider[] sliders = GetComponentsInChildren<Slider>(true);
+        foreach (Slider slider in sliders) {
+            if (diameterSlider == null && slider.name == "DiameterSlider") {
+                diameterSlider = slider;
+            }
+            if (holeSizeSlider == null && slider.name == "HoleSizeSlider") {
+                holeSizeSlider = slider;
+            }
+        }
+        if (calibrationColorListDown == null) {
+            foreach (Dropdown dropdown in GetComponentsInChildren<Dropdown>(true)) {
+                if (dropdown.name == "CalibrationColorListDown" ||
+                    dropdown.name == "CalibrationColorListDropdown") {
+                    calibrationColorListDown = dropdown;
+                    break;
+                }
+            }
+        }
+
         if (calibrationModeToggles == null || calibrationModeToggles.Length != CalibrationTypes.Length) {
             Array.Resize(ref calibrationModeToggles, CalibrationTypes.Length);
         }
@@ -667,6 +797,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
                     levelController.UseCueGazeEventCount);
             }
 
+            RefreshCalibrationAppearanceUi();
             RefreshCalibrationModeToggles();
             SetToggleValue(calibrationRewardToggle, calibrationRewardsEnabled);
             SetToggleValue(
@@ -675,6 +806,69 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         }
         finally {
             isRefreshingSettingsUi = false;
+        }
+    }
+
+    private void PopulateCalibrationColors()
+    {
+        if (calibrationColorListDown == null) {
+            return;
+        }
+        // This control may have been copied from the settings selector. Keep
+        // its own UI listeners, but disconnect copied settings-manager actions.
+        DisconnectSettingsSelectionCallbacks(calibrationColorListDown.onValueChanged);
+        calibrationColorListDown.ClearOptions();
+        calibrationColorListDown.AddOptions(new System.Collections.Generic.List<string>(CalibrationColorNames));
+    }
+
+    private static void DisconnectSettingsSelectionCallbacks(Dropdown.DropdownEvent changed)
+    {
+        for (int index = 0; index < changed.GetPersistentEventCount(); index++) {
+            if (changed.GetPersistentTarget(index) is SaveLoadGUIController) {
+                changed.SetPersistentListenerState(index, UnityEngine.Events.UnityEventCallState.Off);
+            }
+        }
+    }
+
+    private void RefreshCalibrationAppearanceUi()
+    {
+        bool wasRefreshing = isRefreshingSettingsUi;
+        isRefreshingSettingsUi = true;
+        try {
+            int diameter = EyeLink.CalibrationTargetDiameter;
+            // Expand the range for saved values or a larger range set in the Inspector.
+            int maximum = diameterSlider == null ? 256 :
+                Math.Max(256, Mathf.RoundToInt(diameterSlider.maxValue));
+            SetPixelSlider(diameterSlider, 3, Math.Max(maximum, diameter), diameter);
+            SetPixelSlider(holeSizeSlider, 2, diameter - 1, EyeLink.CalibrationHoleDiameter);
+            if (calibrationColorListDown != null) {
+                calibrationColorListDown.SetValueWithoutNotify(calibrationColorIndex);
+                calibrationColorListDown.RefreshShownValue();
+                // SetValueWithoutNotify skips MyDropdownScript's input-field listener.
+                // Keep the editable caption in sync for defaults and loaded settings.
+                MyDropdownScript editableDropdown = calibrationColorListDown as MyDropdownScript;
+                if (editableDropdown != null && editableDropdown.inputField != null) {
+                    editableDropdown.inputField.SetTextWithoutNotify(CalibrationColorNames[calibrationColorIndex]);
+                }
+            }
+        }
+        finally {
+            isRefreshingSettingsUi = wasRefreshing;
+        }
+    }
+
+    private static void SetPixelSlider(Slider slider, int minimum, int maximum, int value)
+    {
+        if (slider == null) {
+            return;
+        }
+        slider.maxValue = maximum;
+        slider.minValue = minimum;
+        slider.wholeNumbers = true;
+        slider.value = value;
+        DescriptiveSlider descriptive = slider as DescriptiveSlider;
+        if (descriptive != null && descriptive.valueText != null) {
+            descriptive.valueText.text = value.ToString(CultureInfo.InvariantCulture);
         }
     }
 

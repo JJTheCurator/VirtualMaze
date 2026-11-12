@@ -19,6 +19,23 @@ The log records the monitor, calibration area, and exact command.
   **HV3** (three points in a triangle), **HV5** (five points in a cross),
   **HV9** (nine-point grid), or **HV13** (13 points). The choice is saved with
   experiment settings; older settings default to HV9.
+* **Calibration Target Color** selects the dot's foreground color. The background
+  is automatically black for lighter targets and white for darker targets. The
+  default is a black target on white. Older presets reuse their saved color
+  selection as the target color.
+* **Diameter** and **Hole Size** sliders set the outer dot and center hole
+  diameters in participant-display pixels. The outer dot is at least three pixels
+  wide; the hole is at least two pixels wide and always smaller than the dot.
+  Reducing the outer diameter also clamps the hole size when necessary.
+  Both values are saved with experiment settings. Defaults use
+  `diameter = width / 60` and `hole = max(2, width / 300)`, using integer division.
+  The center hole uses the background color.
+  The log records the applied sizes/colors, the first tracker target state, and
+  each target draw position. An out-of-window target reports an error.
+  Appearance changes apply when the next setup operation starts.
+  Calibration, validation, and drift targets are painted by the native window
+  and restored on Windows repaint events. The SDK still handles camera images
+  and beeps; target visibility does not depend on its GDI target drawing.
 * **Calibration** sets the Host to the selected calibration type after
   configuring the display coordinates, opens tracker setup, waits
   one second after it is ready, and sends the tracker's `c` key to start

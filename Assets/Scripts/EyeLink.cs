@@ -58,7 +58,7 @@ public static class EyeLink
     /// <summary>
     /// C# equivalent of set_target_size(). Values are integer pixel diameters;
     /// keep the focal hole at least two pixels wide, as in the SDK example.
-    /// Applied to the GDI interface before calibration, validation, or drift correction.
+    /// Used by the target renderer for the next calibration, validation, or drift correction.
     /// </summary>
     public static void SetCalibrationTargetSize(int diameter, int holeDiameter)
     {
@@ -84,6 +84,9 @@ public static class EyeLink
 
     private static int GetCalibrationDisplayWidthForDefaults()
     {
+        if (CalibrationDisplayWidth > 0) {
+            return CalibrationDisplayWidth;
+        }
         int monitorIndex = GetDefaultCalibrationMonitorIndex();
         int width = Display.displays.Length > monitorIndex
             ? Display.displays[monitorIndex].systemWidth : 0;
@@ -313,6 +316,7 @@ public static class EyeLink
         private readonly Action<int> onPointAccepted;
         private bool targetPending;
         private bool targetDrawn;
+        private bool targetStateReported;
         private float targetX;
         private float targetY;
         private int acceptedPointCount;
@@ -418,11 +422,12 @@ public static class EyeLink
             string sdkCall = "getCalibrationResult";
             try {
                 eyelink.getCalibrationResult();
-                sdkCall = "setupCalibrationDisplay";
-                calibrationGraphics.setupCalibrationDisplay();
+                sdkCall = "painting the native drift target display";
+                BeginTargetDisplay();
                 displayStarted = true;
-                calibrationGraphics.drawCalibrationTarget(x, y);
+                calibrationWindow.DrawCalibrationTarget(x, y);
                 targetDrawn = true;
+                ReportStatus("[EyeLink] Drew drift target at (" + x + ", " + y + ").");
                 calibrationGraphics.playCalibrationBeep(
                     SREYELINKLib.CAL_BEEP_ID.DC_TARG_BEEP);
 
@@ -487,16 +492,15 @@ public static class EyeLink
                     if (displayStarted) {
                         try {
                             if (targetDrawn) {
-                                calibrationGraphics.eraseCalibrationTarget();
+                                calibrationWindow.EraseCalibrationTarget();
                                 targetDrawn = false;
                             }
-                            calibrationGraphics.clearCalibrationDisplay();
                             if (result != NoReply) {
                                 calibrationGraphics.playDoneBeep(result);
                             }
                         }
                         finally {
-                            calibrationGraphics.exitCalibrationDisplay();
+                            calibrationWindow.EndTargetDisplay();
                         }
                     }
                 }
@@ -558,7 +562,8 @@ public static class EyeLink
         private short RunTargetModeDisplay()
         {
             short result = NoReply;
-            calibrationGraphics.setupCalibrationDisplay();
+            BeginTargetDisplay();
+            ReportStatus("[EyeLink] Target display ready; waiting for tracker target positions.");
 
             try {
                 while (eyelink.inSetup() &&
@@ -598,16 +603,18 @@ public static class EyeLink
                 }
             }
             finally {
-                if (targetDrawn) {
-                    calibrationGraphics.eraseCalibrationTarget();
-                    targetDrawn = false;
+                try {
+                    if (targetDrawn) {
+                        calibrationWindow.EraseCalibrationTarget();
+                        targetDrawn = false;
+                    }
+                    if (result != NoReply) {
+                        calibrationGraphics.playDoneBeep(result);
+                    }
                 }
-
-                calibrationGraphics.clearCalibrationDisplay();
-                if (result != NoReply) {
-                    calibrationGraphics.playDoneBeep(result);
+                finally {
+                    calibrationWindow.EndTargetDisplay();
                 }
-                calibrationGraphics.exitCalibrationDisplay();
             }
 
             if (result == NoReply) {
@@ -619,6 +626,14 @@ public static class EyeLink
             return result;
         }
 
+        private void BeginTargetDisplay()
+        {
+            calibrationWindow.BeginTargetDisplay(ToColorRef(CalibrationTargetColor),
+                ToColorRef(CalibrationBackgroundColor), CalibrationTargetDiameter,
+                CalibrationHoleDiameter);
+            ReportStatus("[EyeLink] Target renderer: native window painting with repaint support.");
+        }
+
         private void UpdateCalibrationTarget()
         {
             float currentX;
@@ -627,19 +642,35 @@ public static class EyeLink
             // counterpart, targetCheckf(). Like the documented C function,
             // its return value is non-zero while the tracker wants the target
             // displayed and zero while it wants the target erased.
-            bool targetVisible = eyelink.targetCheckf(
+            short targetState = eyelink.targetCheckf(
                 out currentX,
-                out currentY) != 0;
+                out currentY);
+            bool targetVisible = targetState != 0;
+            if (!targetStateReported) {
+                ReportStatus("[EyeLink] First targetCheckf: state=" + targetState +
+                    ", position=(" + currentX + ", " + currentY + ").");
+                targetStateReported = true;
+            }
 
             bool targetMoved = targetPending &&
                 (currentX != targetX || currentY != targetY);
             if (targetDrawn && (!targetVisible || targetMoved)) {
-                calibrationGraphics.eraseCalibrationTarget();
+                calibrationWindow.EraseCalibrationTarget();
                 targetDrawn = false;
             }
 
             if (!targetVisible) {
                 return;
+            }
+
+            if (Single.IsNaN(currentX) || Single.IsInfinity(currentX) ||
+                Single.IsNaN(currentY) || Single.IsInfinity(currentY) ||
+                currentX < 0 || currentY < 0 ||
+                currentX >= CalibrationDisplayWidth || currentY >= CalibrationDisplayHeight) {
+                throw new InvalidOperationException(
+                    "EyeLink requested a target outside the calibration window: (" +
+                    currentX + ", " + currentY + ") for " +
+                    CalibrationDisplayWidth + "x" + CalibrationDisplayHeight + " pixels.");
             }
 
             if (!targetPending || targetMoved) {
@@ -655,10 +686,12 @@ public static class EyeLink
             }
 
             if (!targetDrawn) {
-                calibrationGraphics.drawCalibrationTarget(
+                calibrationWindow.DrawCalibrationTarget(
                     Convert.ToInt16(Math.Round(currentX)),
                     Convert.ToInt16(Math.Round(currentY)));
                 targetDrawn = true;
+                ReportStatus("[EyeLink] Drew " + operation + " target at (" +
+                    currentX + ", " + currentY + "), targetCheckf=" + targetState + ".");
             }
         }
 
@@ -1537,13 +1570,14 @@ public static class EyeLink
             finally {
                 eyelink.setTrackerSetupDefault(0);
             }
-        });
+        }, startInCameraMode);
     }
 
     private static bool RunCalibrationWindow(
         string operation,
         Action<int, int, EyeLinkCalibrationWindow, SREYELINKLib.ELGDICal>
-            trackerAction)
+            trackerAction,
+        bool useSdkGraphics = false)
     {
         // Calibration, validation, drift detection, and camera setup all use
         // this same Display 2 window and coordinate system.
@@ -1590,17 +1624,25 @@ public static class EyeLink
 
                 stage = "creating the GDI calibration interface";
                 SREYELINKLib.ELGDICal cal = eyelinkUtil.getGDICal();
-                stage = "assigning the calibration window handle";
-                cal.setCalibrationWindow(calibrationWindow.Handle.ToInt32());
-                stage = "setting the calibration target size";
-                // COM equivalents of set_target_size() and set_calibration_colors().
-                cal.setCalibrationTargetSize((short)CalibrationTargetDiameter,
-                    (short)CalibrationHoleDiameter);
-                stage = "setting the calibration colors";
-                cal.setCalibrationColors(ToColorRef(CalibrationTargetColor),
-                    ToColorRef(CalibrationBackgroundColor));
-                stage = "enabling calibration key collection";
-                cal.enableKeyCollection(true);
+                // Preserve the sizes chosen in the settings panel. The getters
+                // use the SDK width-based defaults only when no size has been set.
+                ReportStatus("[EyeLink] Calibration appearance: display width=" + width +
+                    ", diameter=" + CalibrationTargetDiameter + " px, hole=" +
+                    CalibrationHoleDiameter + " px; target=#" +
+                    ColorUtility.ToHtmlStringRGB(CalibrationTargetColor) + ", background=#" +
+                    ColorUtility.ToHtmlStringRGB(CalibrationBackgroundColor) + ".");
+                if (useSdkGraphics) {
+                    // The SDK owns the window only for camera setup. Manual
+                    // target sequences handle their own painting and keyboard input.
+                    stage = "assigning the camera setup window handle";
+                    cal.setCalibrationWindow(calibrationWindow.Handle.ToInt32());
+                    cal.setCalibrationTargetSize((short)CalibrationTargetDiameter,
+                        (short)CalibrationHoleDiameter);
+                    cal.setCalibrationColors(ToColorRef(CalibrationTargetColor),
+                        ToColorRef(CalibrationBackgroundColor));
+                    stage = "enabling camera setup key collection";
+                    cal.enableKeyCollection(true);
+                }
 
                 try {
                     stage = "starting the tracker operation";
@@ -1611,7 +1653,9 @@ public static class EyeLink
                         cal);
                 }
                 finally {
-                    cal.enableKeyCollection(false);
+                    if (useSdkGraphics) {
+                        cal.enableKeyCollection(false);
+                    }
                 }
             }
 

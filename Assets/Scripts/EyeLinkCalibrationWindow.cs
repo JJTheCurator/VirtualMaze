@@ -16,6 +16,68 @@ internal sealed class EyeLinkCalibrationWindow : IDisposable
     private readonly string windowClassName;
     private readonly IntPtr instance;
     private bool classRegistered;
+    private CalibrationTargetSurface targetSurface;
+    private Exception targetPaintFailure;
+
+    /// <summary>
+    /// Retains the target so a Windows repaint can restore it. Camera images
+    /// continue to use the SDK, but target drawing does not depend on its GDI DC.
+    /// </summary>
+    internal sealed class CalibrationTargetSurface
+    {
+        private readonly Color foreground;
+        private readonly Color background;
+        private readonly int diameter;
+        private readonly int holeDiameter;
+        private bool targetVisible;
+        private int targetX, targetY;
+
+        internal CalibrationTargetSurface(uint foreground, uint background,
+            int diameter, int holeDiameter)
+        {
+            if (diameter < 3 || holeDiameter < 2 || holeDiameter >= diameter) {
+                throw new ArgumentException("Invalid calibration target diameters.");
+            }
+            this.foreground = FromColorRef(foreground);
+            this.background = FromColorRef(background);
+            this.diameter = diameter;
+            this.holeDiameter = holeDiameter;
+        }
+
+        internal void ShowTarget(int x, int y)
+        {
+            targetX = x;
+            targetY = y;
+            targetVisible = true;
+        }
+
+        internal void EraseTarget()
+        {
+            targetVisible = false;
+        }
+
+        internal void Paint(Graphics graphics)
+        {
+            graphics.PageUnit = GraphicsUnit.Pixel;
+            graphics.Clear(background);
+            if (!targetVisible) {
+                return;
+            }
+            using (SolidBrush disk = new SolidBrush(foreground))
+            using (SolidBrush hole = new SolidBrush(background)) {
+                graphics.FillEllipse(disk, targetX - diameter / 2f,
+                    targetY - diameter / 2f, diameter, diameter);
+                graphics.FillEllipse(hole, targetX - holeDiameter / 2f,
+                    targetY - holeDiameter / 2f, holeDiameter, holeDiameter);
+            }
+        }
+
+        private static Color FromColorRef(uint color)
+        {
+            return Color.FromArgb((int)(color & 0xFF),
+                (int)((color >> 8) & 0xFF), (int)((color >> 16) & 0xFF));
+        }
+    }
 
     internal IntPtr Handle { get; private set; }
     internal string TargetMonitorDeviceName { get; private set; }
@@ -168,6 +230,61 @@ internal sealed class EyeLinkCalibrationWindow : IDisposable
             TranslateMessage(ref message);
             DispatchMessage(ref message);
         }
+        ThrowIfTargetPaintFailed();
+    }
+
+    internal void BeginTargetDisplay(uint foreground, uint background,
+        int diameter, int holeDiameter)
+    {
+        targetSurface = new CalibrationTargetSurface(
+            foreground, background, diameter, holeDiameter);
+        RepaintTargetDisplay();
+    }
+
+    internal void DrawCalibrationTarget(int x, int y)
+    {
+        if (targetSurface == null) {
+            throw new InvalidOperationException("The calibration target display is not active.");
+        }
+        Size size = ClientSize;
+        if (x < 0 || y < 0 || x >= size.Width || y >= size.Height) {
+            throw new ArgumentOutOfRangeException("x/y",
+                "The calibration target is outside the visible window.");
+        }
+        targetSurface.ShowTarget(x, y);
+        RepaintTargetDisplay();
+    }
+
+    internal void EraseCalibrationTarget()
+    {
+        if (targetSurface != null) {
+            targetSurface.EraseTarget();
+            RepaintTargetDisplay();
+        }
+    }
+
+    internal void EndTargetDisplay()
+    {
+        targetSurface = null;
+    }
+
+    private void RepaintTargetDisplay()
+    {
+        if (!InvalidateRect(Handle, IntPtr.Zero, false)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "Could not invalidate the calibration target display.");
+        }
+        UpdateWindow(Handle);
+        ThrowIfTargetPaintFailed();
+    }
+
+    private void ThrowIfTargetPaintFailed()
+    {
+        if (targetPaintFailure != null) {
+            Exception failure = targetPaintFailure;
+            targetPaintFailure = null;
+            throw new InvalidOperationException("Could not paint the calibration target.", failure);
+        }
     }
 
     internal bool TryDequeueSetupKey(out int key)
@@ -179,6 +296,29 @@ internal sealed class EyeLinkCalibrationWindow : IDisposable
     private IntPtr ProcessWindowMessage(IntPtr window, uint message,
         IntPtr wParam, IntPtr lParam)
     {
+        if (targetSurface != null && message == 0x0014) { // WM_ERASEBKGND
+            return new IntPtr(1); // WM_PAINT paints the background and target together.
+        }
+        if (targetSurface != null && message == 0x000F) { // WM_PAINT
+            PaintStruct paint;
+            IntPtr dc = BeginPaint(window, out paint);
+            try {
+                if (dc == IntPtr.Zero) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                using (Graphics graphics = Graphics.FromHdc(dc)) {
+                    targetSurface.Paint(graphics);
+                }
+            }
+            catch (Exception exception) {
+                // Never unwind an exception through an unmanaged window callback.
+                targetPaintFailure = exception;
+            }
+            finally {
+                EndPaint(window, ref paint);
+            }
+            return IntPtr.Zero;
+        }
         if (message == 0x0010) { // WM_CLOSE: allow the tracker to exit first.
             setupKeys.Enqueue(0x001B);
             return IntPtr.Zero;
@@ -254,6 +394,15 @@ internal sealed class EyeLinkCalibrationWindow : IDisposable
         public int x, y;
         public uint privateData;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PaintStruct {
+        public IntPtr dc;
+        public int erase;
+        public NativeRect paint;
+        public int restore, incrementalUpdate;
+        public int reserved0, reserved1, reserved2, reserved3;
+        public int reserved4, reserved5, reserved6, reserved7;
+    }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string name);
@@ -271,6 +420,14 @@ internal sealed class EyeLinkCalibrationWindow : IDisposable
     private static extern bool DestroyWindow(IntPtr window);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetClientRect(IntPtr window, out NativeRect rectangle);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool InvalidateRect(IntPtr window, IntPtr rectangle, bool erase);
+    [DllImport("user32.dll")]
+    private static extern bool UpdateWindow(IntPtr window);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr BeginPaint(IntPtr window, out PaintStruct paint);
+    [DllImport("user32.dll")]
+    private static extern bool EndPaint(IntPtr window, ref PaintStruct paint);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip,
         MonitorProcedure procedure, IntPtr data);

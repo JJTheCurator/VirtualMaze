@@ -16742,7 +16742,7 @@ PrefabInstance:
     - target: {fileID: 5384949323869470930, guid: e6ac70a079f3f554986ce59e119814f7,
         type: 3}
       propertyPath: m_Text
-      value: Input Calibration Color in R,G,B
+      value: Select Calibration Target Color
       objectReference: {fileID: 0}
     - target: {fileID: 6245494366966320021, guid: e6ac70a079f3f554986ce59e119814f7,
         type: 3}

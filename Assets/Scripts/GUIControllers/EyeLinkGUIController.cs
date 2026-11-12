@@ -37,7 +37,11 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         public int calibrationHoleDiameter;
 
         [OptionalField(VersionAdded = 4)]
+        // Retained so presets saved before foreground selection still load.
         public string calibrationBackgroundColor;
+
+        [OptionalField(VersionAdded = 5)]
+        public string calibrationTargetColor;
 
         public Settings(
             string localEdfPath,
@@ -53,7 +57,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             string calibrationType = "HV9",
             int calibrationTargetDiameter = 0,
             int calibrationHoleDiameter = 0,
-            string calibrationBackgroundColor = "White")
+            string calibrationTargetColor = "Black")
         {
             this.localEdfPath = localEdfPath;
             this.useFixedCueDuration = useFixedCueDuration;
@@ -69,7 +73,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             this.calibrationType = calibrationType;
             this.calibrationTargetDiameter = calibrationTargetDiameter;
             this.calibrationHoleDiameter = calibrationHoleDiameter;
-            this.calibrationBackgroundColor = calibrationBackgroundColor;
+            this.calibrationTargetColor = calibrationTargetColor;
         }
     }
 
@@ -114,7 +118,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
     [SerializeField]
     private Dropdown monitorsListDropDown = null;
 
-    [Header("Calibration appearance (pixel diameters and background color)")]
+    [Header("Calibration appearance (pixel diameters and target color)")]
     [SerializeField]
     private Slider diameterSlider = null;
 
@@ -418,10 +422,10 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
     private void ApplyCalibrationColor(int index)
     {
         calibrationColorIndex = index;
-        Color background = CalibrationColors[index];
-        // Keep the target visible on both light and dark background presets.
-        float brightness = 0.299f * background.r + 0.587f * background.g + 0.114f * background.b;
-        Color foreground = brightness >= 0.5f ? Color.black : Color.white;
+        Color foreground = CalibrationColors[index];
+        // The selected color belongs to the target. Choose a contrasting background.
+        float brightness = 0.299f * foreground.r + 0.587f * foreground.g + 0.114f * foreground.b;
+        Color background = brightness >= 0.5f ? Color.black : Color.white;
         EyeLink.SetCalibrationColors(foreground, background);
     }
 
@@ -431,16 +435,19 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             ? (Action<int>)OnCalibrationPointAccepted
             : null;
         EyeLink.Calibration(rewardCallback);
+        RefreshCalibrationAppearanceUi();
     }
 
     public void OnDriftDetectionClicked()
     {
         EyeLink.DriftDetection();
+        RefreshCalibrationAppearanceUi();
     }
 
     public void OnValidationClicked()
     {
         EyeLink.Validation();
+        RefreshCalibrationAppearanceUi();
     }
 
     public void OnCameraSetupClicked()
@@ -552,7 +559,7 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
             "HV9",
             diameter,
             holeDiameter,
-            "White");
+            "Black");
     }
 
     public override ComponentSettings GetCurrentSettings()
@@ -598,9 +605,13 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
         EyeLink.SetCalibrationTargetSize(
             settings.calibrationTargetDiameter > 0 ? settings.calibrationTargetDiameter : defaultDiameter,
             settings.calibrationHoleDiameter > 0 ? settings.calibrationHoleDiameter : defaultHoleDiameter);
+        // Older presets stored the dropdown selection under the background name.
+        // Reuse that selection as the target color under the new control behavior.
+        string targetColor = !String.IsNullOrEmpty(settings.calibrationTargetColor)
+            ? settings.calibrationTargetColor : settings.calibrationBackgroundColor;
         int colorIndex = Array.FindIndex(CalibrationColorNames, name => String.Equals(
-            name, settings.calibrationBackgroundColor, StringComparison.OrdinalIgnoreCase));
-        ApplyCalibrationColor(colorIndex >= 0 ? colorIndex : 0);
+            name, targetColor, StringComparison.OrdinalIgnoreCase));
+        ApplyCalibrationColor(colorIndex >= 0 ? colorIndex : Array.IndexOf(CalibrationColorNames, "Black"));
 
         if (!EyeLink.TrySetCalibrationType(settings.calibrationType ?? "HV9")) {
             EyeLink.TrySetCalibrationType("HV9");
@@ -841,6 +852,12 @@ public sealed class EyeLinkGUIController : ConfigurableComponent
                 Math.Max(256, Mathf.RoundToInt(diameterSlider.maxValue));
             SetPixelSlider(diameterSlider, 3, Math.Max(maximum, diameter), diameter);
             SetPixelSlider(holeSizeSlider, 2, diameter - 1, EyeLink.CalibrationHoleDiameter);
+            if (diameterSlider != null) {
+                diameterSlider.interactable = true;
+            }
+            if (holeSizeSlider != null) {
+                holeSizeSlider.interactable = true;
+            }
             if (calibrationColorListDown != null) {
                 calibrationColorListDown.SetValueWithoutNotify(calibrationColorIndex);
                 calibrationColorListDown.RefreshShownValue();
